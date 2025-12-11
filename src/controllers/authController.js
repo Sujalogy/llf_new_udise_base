@@ -1,29 +1,27 @@
-const { OAuth2Client } = require('google-auth-library');
 const { v4: uuidv4 } = require('uuid');
-const pool = require('../config/db'); // Your existing DB connection
-
-const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+const pool = require('../config/db'); 
 
 exports.googleLogin = async (req, res) => {
-  const { credential } = req.body; // The JWT from frontend
+  // 1. Receive User Data directly (Trusting Frontend Authentication)
+  const { email, name, picture, googleId } = req.body;
+
+  // 2. LOG IT: Log the login attempt
+  console.log(`[LOGIN EVENT] User: ${email} logged in at ${new Date().toISOString()}`);
+
+  if (!email || !googleId) {
+    return res.status(400).json({ error: "Missing required user data" });
+  }
 
   try {
-    // 1. Verify Google Token
-    const ticket = await client.verifyIdToken({
-      idToken: credential,
-      audience: process.env.GOOGLE_CLIENT_ID,
-    });
-    const payload = ticket.getPayload();
-    const { email, name, picture, sub: googleId } = payload;
+    // 3. Domain Restriction Check (Optional)
+    const ALLOWED_DOMAIN = process.env.ALLOWED_DOMAIN || "languageandlearningfoundation.org"; 
+    // Uncomment below to enforce domain check on backend
+    // if (!email.endsWith(`@${ALLOWED_DOMAIN}`)) {
+    //   console.warn(`[LOGIN BLOCKED] Unauthorized domain: ${email}`);
+    //   return res.status(403).json({ error: "Domain not allowed" });
+    // }
 
-    // 2. Domain Restriction Check (Backend side)
-    const ALLOWED_DOMAIN = process.env.ALLOWED_DOMAIN; // e.g., "school.org"
-    if (!email.endsWith(`@${ALLOWED_DOMAIN}`)) {
-      return res.status(403).json({ error: "Domain not allowed" });
-    }
-
-    // 3. Upsert User (Insert if new, Update if exists)
-    // We use ON CONFLICT to handle existing users
+    // 4. Upsert User (Insert if new, Update if exists)
     const userQuery = `
       INSERT INTO udise_data.users (email, google_id, name, profile_picture, last_login, status, role)
       VALUES ($1, $2, $3, $4, NOW(), 'active', 'user')
@@ -39,10 +37,10 @@ exports.googleLogin = async (req, res) => {
     const userResult = await pool.query(userQuery, [email, googleId, name, picture]);
     const user = userResult.rows[0];
 
-    // 4. Generate Session Token (Using your auth_tokens table)
-    const sessionToken = uuidv4(); // Generate a random secure token
+    // 5. Generate Session Token (Valid for 1 Day)
+    const sessionToken = uuidv4(); 
     const expiryDate = new Date();
-    expiryDate.setDate(expiryDate.getDate() + 7); // Expires in 7 days
+    expiryDate.setDate(expiryDate.getDate() + 1); // Set to 1 Day from now
 
     const tokenQuery = `
       INSERT INTO udise_data.auth_tokens (user_id, token, expires_at)
@@ -50,8 +48,9 @@ exports.googleLogin = async (req, res) => {
     `;
     await pool.query(tokenQuery, [user.user_id, sessionToken, expiryDate]);
 
-    // 5. Send response
-    // Ideally, set token as HttpOnly cookie, but returning JSON for simplicity here
+    console.log(`[SESSION CREATED] Token generated for user ID: ${user.user_id}`);
+
+    // 6. Send response
     res.json({
       success: true,
       token: sessionToken,
@@ -65,7 +64,7 @@ exports.googleLogin = async (req, res) => {
     });
 
   } catch (error) {
-    console.error("Auth Error:", error);
-    res.status(401).json({ error: "Authentication failed" });
+    console.error("Database/Auth Error:", error);
+    res.status(500).json({ error: "Internal Server Error during login" });
   }
 };

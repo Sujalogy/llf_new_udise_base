@@ -16,11 +16,11 @@ exports.getDistrictsByState = async (stcode11) => {
 };
 
 // --- B. SYNCED LIST (For Explorer Page) ---
-// Returns ONLY states/districts that have data in your `school_info` table
+// Returns ONLY states/districts that have data in your `udise_data.school_udise_list` table
 exports.getSyncedStates = async () => {
   const result = await pool.query(`
     SELECT DISTINCT stname, stcode11 
-    FROM udise_data.school_info 
+    FROM udise_data.school_udise_list 
     ORDER BY stname
   `);
   return result.rows;
@@ -29,7 +29,7 @@ exports.getSyncedStates = async () => {
 exports.getSyncedDistricts = async (stcode11) => {
   const result = await pool.query(`
     SELECT DISTINCT dtname, dtcode11 
-    FROM udise_data.school_info 
+    FROM udise_data.school_udise_list 
     WHERE stcode11 = $1 
     ORDER BY dtname
   `, [stcode11]);

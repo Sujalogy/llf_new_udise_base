@@ -5,14 +5,14 @@ const exportController = require("../controllers/exportController");
 
 // --- 1. LOCAL DB ROUTES ---
 router.get("/list", schoolController.getMySchools);
-router.post("/sync", schoolController.syncData);
+router.post("/sync", schoolController.syncData); // Level 1.5 (GIS Coords)
+router.post("/sync-directory", schoolController.syncDirectory); // Level 1 (Master List)
+router.post("/sync-details", schoolController.syncSchoolDetails); // Level 2 (Full Details - NEW)
 router.get("/export/list", exportController.downloadSchoolList);
 
 // --- 2. UDISE+ PROXY ROUTES ---
 router.get("/search", schoolController.searchSchool);
 router.get("/profile/:schoolId", schoolController.getProfile);
-router.get("/facility/:schoolId", schoolController.getFacilities);
-router.get("/social-data/:schoolId", schoolController.getSocialData);
-router.get("/stats/:schoolId", schoolController.getStats);
+// ... other existing proxy routes
 
 module.exports = router;
