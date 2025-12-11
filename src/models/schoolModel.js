@@ -46,12 +46,10 @@ exports.getLocalSchoolList = async (
   page = 1,
   limit = 100
 ) => {
-  // Calculate the offset based on the page number
-  // Page 1: offset 0
-  // Page 2: offset 100 (if limit is 100)
   const offset = (page - 1) * limit;
 
-  const query = `
+  // 1. Fetch Paginated Data
+  const dataQuery = `
     SELECT 
       l.schcd as udise_code,
       d.school_name,
@@ -72,15 +70,26 @@ exports.getLocalSchoolList = async (
     LIMIT $3 OFFSET $4
   `;
 
-  // We pass limit and offset as the 3rd and 4th parameters
-  const result = await pool.query(query, [stcode11, dtcode11, limit, offset]);
+  // 2. Fetch Total Count (for UI pagination info)
+  const countQuery = `
+    SELECT COUNT(*) as total
+    FROM udise_data.school_udise_list l
+    WHERE l.stcode11 = $1 AND l.dtcode11 = $2
+  `;
+
+  // Execute queries in parallel
+  const [dataResult, countResult] = await Promise.all([
+    pool.query(dataQuery, [stcode11, dtcode11, limit, offset]),
+    pool.query(countQuery, [stcode11, dtcode11]),
+  ]);
 
   return {
-    data: result.rows,
+    data: dataResult.rows,
     meta: {
       page: page,
       limit: limit,
-      count: result.rows.length,
+      count: dataResult.rows.length, // Count of current page
+      total: parseInt(countResult.rows[0].total), // Total records in DB
     },
   };
 };
@@ -123,7 +132,7 @@ exports.upsertSchoolDetails = async (data) => {
     INSERT INTO udise_data.school_udise_data (
       udise_code, school_id, school_name, year_desc,
       
-      -- We map these to $45-$49 at the end of the values array
+      -- Location Details ($45-$49)
       state_name, district_name, block_name, village_ward_name, cluster_name,
       
       head_master_name, school_status, school_type,
@@ -148,7 +157,7 @@ exports.upsertSchoolDetails = async (data) => {
       social_data_cwsn, social_data_rte, social_data_ews
     ) VALUES (
       $1, $2, $3, $4,
-      $45, $46, $47, $48, $49,  -- These placeholders expect values at indices 44-48
+      $45, $46, $47, $48, $49,
       $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
       $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29,
       $30, $31, $32, $33, $34, $35, $36,
@@ -176,21 +185,29 @@ exports.upsertSchoolDetails = async (data) => {
   const s = data.stats || {};
   const soc = data.social || {};
 
-  const toBool = (val) => val === 1 || val === "1-Yes";
+  // Helper to parse numbers safely
   const num = (val) => {
     const n = parseInt(val, 10);
     return isNaN(n) ? 0 : n;
   };
+
   const intOrNull = (val) => {
     const n = parseInt(val, 10);
     return isNaN(n) ? null : n;
+  };
+
+  // --- NEW HELPER: Converts "1-Yes", "2-No", "Yes", "No" to boolean ---
+  const toBool = (val) => {
+    if (!val) return false;
+    // Check if the string contains "Yes" (case insensitive) or starts with "1"
+    const str = String(val).toLowerCase();
+    return str.includes('yes') || str.startsWith('1');
   };
 
   const totalTeachers = r.totalTeacher
     ? num(r.totalTeacher)
     : num(s.totalTeacherReg) + num(s.totalTeacherCon);
 
-  // --- CORRECTED ORDER ---
   const values = [
     // $1 - $4
     data.udiseCode,
@@ -198,40 +215,38 @@ exports.upsertSchoolDetails = async (data) => {
     r.schoolName,
     r.yearDesc,
 
-    // $5 - $9 (Previously you had location strings here, which broke the order)
-    p.headMasterName, // $5
-    intOrNull(r.schoolStatus), // $6
-    intOrNull(r.schType), // $7
-    intOrNull(p.mediumOfInstrId1), // $8
-    intOrNull(p.mediumOfInstrId2), // $9
+    // $5 - $9 (Text Fields)
+    p.headMasterName,
+    r.schStatusName,
+    r.schTypeDesc,
+    p.mediumOfInstrName1,
+    p.mediumOfInstrName2,
 
-    // $10 (The Boolean that was receiving "SANGEETHA")
-    p.minorityYn === 1, // $10
-
-    // $11 - $17
-    p.anganwadiYn === 1,
+    // $10 - $17 (Flags - wrapped in toBool)
+    toBool(p.minorityYnDesc),       // $10
+    toBool(p.anganwadiYnDesc),      // $11
     num(p.anganwadiStuB),
     num(p.anganwadiStuG),
-    p.cceYn === 1,
-    p.smcYn === 1,
-    p.approachRoadYn === 1,
-    p.shiftSchYn === 1,
+    toBool(p.cceYnDesc),            // $14
+    toBool(p.smcYnDesc),            // $15
+    toBool(p.approachRoadYnDesc),   // $16
+    toBool(p.shiftSchYnDesc),       // $17
 
-    // $18 - $29
-    intOrNull(f.bldStatusId),
+    // $18 - $29 (Infrastructure)
+    f.bldStatus,
     num(f.clsrmsInst),
     num(f.clsrmsGd),
     num(f.toiletb),
     num(f.toiletg),
-    toBool(f.drinkWaterYn),
-    toBool(f.electricityYn),
-    toBool(f.libraryYn),
-    toBool(f.playgroundYn),
-    toBool(f.medchkYn),
-    toBool(f.integratedLabYn),
-    toBool(f.internetYn),
+    toBool(f.drinkWaterYnDesc),    // $23
+    toBool(f.electricityYnDesc),   // $24
+    toBool(f.libraryYnDesc),       // $25
+    toBool(f.playgroundYnDesc),    // $26
+    toBool(f.medchkYnDesc),        // $27
+    toBool(f.integratedLabYnDesc), // $28
+    toBool(f.internetYnDesc),      // $29
 
-    // $30 - $36
+    // $30 - $36 (Teachers)
     totalTeachers,
     num(r.totMale),
     num(r.totFemale),
@@ -240,25 +255,24 @@ exports.upsertSchoolDetails = async (data) => {
     intOrNull(r.lowClass),
     intOrNull(r.highClass),
 
-    // $37 - $39
+    // $37 - $39 (Students)
     num(s.totalBoy),
     num(s.totalGirl),
     num(s.totalCount),
 
-    // $40 - $44
+    // $40 - $44 (JSON Data)
     JSON.stringify(soc.flag1 || []),
     JSON.stringify(soc.flag2 || []),
     JSON.stringify(soc.flag3 || []),
     JSON.stringify(soc.flag5 || []),
     JSON.stringify(soc.flag4 || []),
 
-    // --- NEW FIELDS ($45 - $49) ---
-    // Moved to the end to match the SQL placeholders
-    r.stateName, // $45
-    r.districtName, // $46
-    r.blockName, // $47
-    r.villageWardName, // $48
-    r.clusterName, // $49
+    // $45 - $49 (New Location Fields)
+    r.stateName,     // $45
+    r.districtName,  // $46
+    r.blockName,     // $47
+    r.villWardName,  // $48
+    r.clusterName,   // $49
   ];
 
   await pool.query(query, values);

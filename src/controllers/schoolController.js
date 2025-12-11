@@ -67,10 +67,21 @@ exports.syncSchoolDetails = async (req, res) => {
 // ... keep existing getMySchools & proxies
 exports.getMySchools = async (req, res) => {
   try {
-    const { stcode11, dtcode11 } = req.query;
-    const schools = await schoolModel.getLocalSchoolList(stcode11, dtcode11);
+    // Extract page and limit from query params (default to 1 and 50 if missing)
+    const { stcode11, dtcode11, page = 1, limit = 50 } = req.query;
+    
+    // Pass them to the model
+    const schools = await schoolModel.getLocalSchoolList(
+      stcode11, 
+      dtcode11, 
+      parseInt(page), 
+      parseInt(limit)
+    );
+    
     res.json(schools);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { 
+    res.status(500).json({ error: err.message }); 
+  }
 };
 
 exports.syncData = async (req, res) => {
