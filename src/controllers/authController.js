@@ -16,10 +16,10 @@ exports.googleLogin = async (req, res) => {
     // 3. Domain Restriction Check (Optional)
     const ALLOWED_DOMAIN = process.env.ALLOWED_DOMAIN || "languageandlearningfoundation.org"; 
     // Uncomment below to enforce domain check on backend
-    // if (!email.endsWith(`@${ALLOWED_DOMAIN}`)) {
-    //   console.warn(`[LOGIN BLOCKED] Unauthorized domain: ${email}`);
-    //   return res.status(403).json({ error: "Domain not allowed" });
-    // }
+    if (!email.endsWith(`@${ALLOWED_DOMAIN}`)) {
+      console.warn(`[LOGIN BLOCKED] Unauthorized domain: ${email}`);
+      return res.status(403).json({ error: "Domain not allowed" });
+    }
 
     // 4. Upsert User (Insert if new, Update if exists)
     const userQuery = `
@@ -47,8 +47,6 @@ exports.googleLogin = async (req, res) => {
       VALUES ($1, $2, $3)
     `;
     await pool.query(tokenQuery, [user.user_id, sessionToken, expiryDate]);
-
-    console.log(`[SESSION CREATED] Token generated for user ID: ${user.user_id}`);
 
     // 6. Send response
     res.json({
