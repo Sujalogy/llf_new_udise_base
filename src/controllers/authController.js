@@ -6,8 +6,6 @@ exports.googleLogin = async (req, res) => {
   const { email, name, picture, googleId } = req.body;
 
   // 2. LOG IT: Log the login attempt
-  console.log(`[LOGIN EVENT] User: ${email} logged in at ${new Date().toISOString()}`);
-
   if (!email || !googleId) {
     return res.status(400).json({ error: "Missing required user data" });
   }
