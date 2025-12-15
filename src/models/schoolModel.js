@@ -158,15 +158,28 @@ exports.upsertSchoolDetails = async (data) => {
 // 2. LISTING & EXPORT
 // -------------------------------------------------------------------------
 
-exports.getLocalSchoolList = async (
-  stcode11,
-  dtcode11,
-  page = 1,
-  limit = 100
-) => {
+exports.getLocalSchoolList = async (stcode11, dtcode11, page, limit, category, management) => {
   const offset = (page - 1) * limit;
+  
+  // Base conditions
+  let whereClause = `WHERE l.stcode11 = $1 AND l.dtcode11 = $2`;
+  const params = [stcode11, dtcode11];
+  let paramIdx = 3;
 
-  // 1. Fetch Paginated Data
+  // Dynamic Filters
+  if (category && category !== 'all') {
+    whereClause += ` AND d.school_type = $${paramIdx}`;
+    params.push(category);
+    paramIdx++;
+  }
+
+  if (management && management !== 'all') {
+    whereClause += ` AND d.management_type = $${paramIdx}`;
+    params.push(management);
+    paramIdx++;
+  }
+
+  // 1. Data Query (Uses LIMIT & OFFSET)
   const dataQuery = `
     SELECT 
       l.schcd as udise_code,
@@ -175,30 +188,33 @@ exports.getLocalSchoolList = async (
       l.dtname as district_name,
       d.block_name,
       l.pincode,
-      l.latitude,
-      l.longitude,
       d.school_id,
       d.school_status,
-      d.total_students,
-      d.total_teachers
+      d.school_type as category,
+      d.management_type as management
     FROM udise_data.school_udise_list l
     LEFT JOIN udise_data.school_udise_data d ON l.schcd = d.udise_code
-    WHERE l.stcode11 = $1 AND l.dtcode11 = $2
-    ORDER BY d.school_name ASC, l.schcd ASC
-    LIMIT $3 OFFSET $4
+    ${whereClause}
+    ORDER BY d.school_name ASC
+    LIMIT $${paramIdx} OFFSET $${paramIdx + 1}
   `;
 
-  // 2. Fetch Total Count (for UI pagination info)
+  // 2. Count Query (Does NOT use LIMIT & OFFSET)
   const countQuery = `
     SELECT COUNT(*) as total
     FROM udise_data.school_udise_list l
-    WHERE l.stcode11 = $1 AND l.dtcode11 = $2
+    LEFT JOIN udise_data.school_udise_data d ON l.schcd = d.udise_code
+    ${whereClause}
   `;
 
-  // Execute queries in parallel
+  // [FIX] Create a separate params array for count query
+  // The 'params' array currently has filter values. We add limit/offset ONLY for dataQuery.
+  const dataParams = [...params, limit, offset]; 
+  const countParams = [...params]; // Copy without limit/offset
+
   const [dataResult, countResult] = await Promise.all([
-    pool.query(dataQuery, [stcode11, dtcode11, limit, offset]),
-    pool.query(countQuery, [stcode11, dtcode11]),
+    pool.query(dataQuery, dataParams),
+    pool.query(countQuery, countParams)
   ]);
 
   return {
@@ -206,8 +222,8 @@ exports.getLocalSchoolList = async (
     meta: {
       page: page,
       limit: limit,
-      count: dataResult.rows.length, // Count of current page
-      total: parseInt(countResult.rows[0].total), // Total records in DB
+      count: dataResult.rows.length,
+      total: parseInt(countResult.rows[0].total),
     },
   };
 };
@@ -255,6 +271,22 @@ exports.checkSchoolDataExists = async (udiseCode, yearDesc) => {
   return result.rows.length > 0;
 };
 
+exports.getDistinctFilters = async () => {
+  const [cats, mgmts] = await Promise.all([
+    pool.query(
+      "SELECT DISTINCT school_type FROM udise_data.school_udise_data WHERE school_type IS NOT NULL ORDER BY school_type"
+    ),
+    pool.query(
+      "SELECT DISTINCT management_type FROM udise_data.school_udise_data WHERE management_type IS NOT NULL ORDER BY management_type"
+    ),
+  ]);
+
+  return {
+    categories: cats.rows.map((r) => r.school_type),
+    managements: mgmts.rows.map((r) => r.management_type),
+  };
+};
+
 exports.upsertSchoolDetails = async (data) => {
   // [UPDATE] Changed ON CONFLICT to use (udise_code, year_desc)
   // Ensure you have a UNIQUE constraint/index on these two columns in your DB
@@ -262,10 +294,10 @@ exports.upsertSchoolDetails = async (data) => {
     INSERT INTO udise_data.school_udise_data (
       udise_code, school_id, school_name, year_desc,
       
-      -- Location Details ($45-$49)
       state_name, district_name, block_name, village_ward_name, cluster_name,
       
       head_master_name, school_status, school_type,
+      management_type,
       medium_of_instruction_1, medium_of_instruction_2,
       is_minority_school, has_anganwadi, 
       anganwadi_boy_students, anganwadi_girl_students,
@@ -288,7 +320,9 @@ exports.upsertSchoolDetails = async (data) => {
     ) VALUES (
       $1, $2, $3, $4,
       $45, $46, $47, $48, $49,
-      $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
+      $5, $6, $7, 
+      $50,
+      $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
       $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29,
       $30, $31, $32, $33, $34, $35, $36,
       $37, $38, $39,
@@ -297,13 +331,8 @@ exports.upsertSchoolDetails = async (data) => {
     ON CONFLICT (udise_code, year_desc) DO UPDATE SET
       school_id = EXCLUDED.school_id,
       school_name = EXCLUDED.school_name,
-      state_name = EXCLUDED.state_name,
-      district_name = EXCLUDED.district_name,
-      block_name = EXCLUDED.block_name,
-      village_ward_name = EXCLUDED.village_ward_name,
-      cluster_name = EXCLUDED.cluster_name,
+      management_type = EXCLUDED.management_type, -- Update on conflict
       total_students = EXCLUDED.total_students,
-      total_teachers = EXCLUDED.total_teachers,
       updated_at = NOW();
   `;
 
@@ -314,92 +343,170 @@ exports.upsertSchoolDetails = async (data) => {
   const s = data.stats || {};
   const soc = data.social || {};
 
-  const num = (val) => {
-    const n = parseInt(val, 10);
-    return isNaN(n) ? 0 : n;
-  };
-
-  const intOrNull = (val) => {
-    const n = parseInt(val, 10);
-    return isNaN(n) ? null : n;
-  };
-
-  const toBool = (val) => {
-    if (!val) return false;
-    const str = String(val).toLowerCase();
-    return str.includes("yes") || str.startsWith("1");
-  };
-
+  const num = (val) => (isNaN(parseInt(val, 10)) ? 0 : parseInt(val, 10));
+  const intOrNull = (val) =>
+    isNaN(parseInt(val, 10)) ? null : parseInt(val, 10);
+  const toBool = (val) =>
+    val
+      ? String(val).toLowerCase().includes("yes") || String(val).startsWith("1")
+      : false;
   const totalTeachers = r.totalTeacher
     ? num(r.totalTeacher)
     : num(s.totalTeacherReg) + num(s.totalTeacherCon);
 
   const values = [
-    // $1 - $4
     data.udiseCode,
     data.schoolId,
     r.schoolName,
-    r.yearDesc, // Using the year description from API (e.g., "2023-24")
-
-    // $5 - $9 (Text Fields)
+    data.yearDesc || r.yearDesc, // 1-4
     p.headMasterName,
     r.schStatusName,
-    r.schTypeDesc,
+    r.schTypeDesc, // 5-7
     p.mediumOfInstrName1,
-    p.mediumOfInstrName2,
-
-    // $10 - $17 (Flags)
+    p.mediumOfInstrName2, // 8-9
     toBool(p.minorityYnDesc),
     toBool(p.anganwadiYnDesc),
     num(p.anganwadiStuB),
-    num(p.anganwadiStuG),
+    num(p.anganwadiStuG), // 10-13
     toBool(p.cceYnDesc),
     toBool(p.smcYnDesc),
     toBool(p.approachRoadYnDesc),
-    toBool(p.shiftSchYnDesc),
-
-    // $18 - $29 (Infrastructure)
+    toBool(p.shiftSchYnDesc), // 14-17
     f.bldStatus,
     num(f.clsrmsInst),
     num(f.clsrmsGd),
     num(f.toiletb),
-    num(f.toiletg),
+    num(f.toiletg), // 18-22
     toBool(f.drinkWaterYnDesc),
     toBool(f.electricityYnDesc),
-    toBool(f.libraryYnDesc),
+    toBool(f.libraryYnDesc), // 23-25
     toBool(f.playgroundYnDesc),
     toBool(f.medchkYnDesc),
     toBool(f.integratedLabYnDesc),
-    toBool(f.internetYnDesc),
-
-    // $30 - $36 (Teachers)
+    toBool(f.internetYnDesc), // 26-29
     totalTeachers,
     num(r.totMale),
     num(r.totFemale),
     num(r.tchReg),
     num(r.tchCont),
     intOrNull(r.lowClass),
-    intOrNull(r.highClass),
-
-    // $37 - $39 (Students)
+    intOrNull(r.highClass), // 30-36
     num(s.totalBoy),
     num(s.totalGirl),
-    num(s.totalCount),
-
-    // $40 - $44 (JSON Data)
+    num(s.totalCount), // 37-39
     JSON.stringify(soc.flag1 || []),
     JSON.stringify(soc.flag2 || []),
     JSON.stringify(soc.flag3 || []),
     JSON.stringify(soc.flag5 || []),
-    JSON.stringify(soc.flag4 || []),
-
-    // $45 - $49 (Location)
+    JSON.stringify(soc.flag4 || []), // 40-44
     r.stateName,
     r.districtName,
     r.blockName,
     r.villWardName,
     r.clusterName,
+    r.schMgmtStateDesc,
   ];
 
   await pool.query(query, values);
+};
+
+exports.getSchoolById = async (schoolId) => {
+  const query = `
+    SELECT * FROM udise_data.school_udise_data 
+    WHERE school_id = $1
+  `;
+  const result = await pool.query(query, [schoolId]);
+  return result.rows[0];
+};
+
+exports.upsertDirectorySchool = async (data) => {
+  await pool.query(
+    `INSERT INTO udise_data.school_udise_list
+    (schcd, objectid, latitude, longitude, pincode, stname, dtname, stcode11, dtcode11)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    ON CONFLICT (schcd) DO UPDATE SET 
+      latitude = EXCLUDED.latitude,
+      longitude = EXCLUDED.longitude,
+      objectid = EXCLUDED.objectid,
+      pincode = EXCLUDED.pincode`,
+    [
+      data.schcd,
+      data.objectid,
+      data.latitude,
+      data.longitude,
+      data.pincode,
+      data.stname,
+      data.dtname,
+      data.stcode11,
+      data.dtcode11,
+    ]
+  );
+};
+
+exports.getDashboardStats = async () => {
+  // 1. Sync Status Counts
+  const syncStatusQuery = `
+    SELECT 
+      (SELECT COUNT(*) FROM udise_data.master_object) as total_master_ids,
+      (SELECT COUNT(*) FROM udise_data.school_udise_list) as synced_directory,
+      (SELECT COUNT(*) FROM udise_data.school_udise_data) as synced_details
+  `;
+
+  // 2. Gender & Enrollment Stats
+  const enrollmentQuery = `
+    SELECT 
+      SUM(total_students) as total_students,
+      SUM(total_boy_students) as total_boys,
+      SUM(total_girl_students) as total_girls,
+      SUM(total_teachers) as total_teachers
+    FROM udise_data.school_udise_data
+  `;
+
+  // 3. Management Distribution
+  const managementQuery = `
+    SELECT management_type, COUNT(*) as count 
+    FROM udise_data.school_udise_data 
+    WHERE management_type IS NOT NULL 
+    GROUP BY management_type 
+    ORDER BY count DESC
+  `;
+
+  // 4. Category Distribution
+  const categoryQuery = `
+    SELECT school_type as category, COUNT(*) as count 
+    FROM udise_data.school_udise_data 
+    WHERE school_type IS NOT NULL 
+    GROUP BY school_type 
+    ORDER BY count DESC
+  `;
+
+  // 5. State-wise Stats (For Table & PTR)
+  const stateStatsQuery = `
+    SELECT 
+      state_name,
+      COUNT(*) as school_count,
+      SUM(total_students) as student_count,
+      SUM(total_teachers) as teacher_count
+    FROM udise_data.school_udise_data
+    WHERE state_name IS NOT NULL
+    GROUP BY state_name
+    ORDER BY school_count DESC
+  `;
+
+  // Execute all in parallel
+  const [sync, enrol, mgmt, cat, states] = await Promise.all([
+    pool.query(syncStatusQuery),
+    pool.query(enrollmentQuery),
+    pool.query(managementQuery),
+    pool.query(categoryQuery),
+    pool.query(stateStatsQuery)
+  ]);
+
+  return {
+    sync: sync.rows[0],
+    enrollment: enrol.rows[0],
+    management: mgmt.rows,
+    category: cat.rows,
+    states: states.rows
+  };
 };

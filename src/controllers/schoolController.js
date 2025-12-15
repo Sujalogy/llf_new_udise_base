@@ -164,18 +164,36 @@ exports.syncSchoolDetails = async (req, res) => {
 // ... keep existing getMySchools & proxies
 exports.getMySchools = async (req, res) => {
   try {
-    // Extract page and limit from query params (default to 1 and 50 if missing)
-    const { stcode11, dtcode11, page = 1, limit = 50 } = req.query;
+    const { stcode11, dtcode11, page = 1, limit = 50, category, management, yearId } = req.query;
+    
+    // [NEW] Resolve Year ID -> Description (e.g., 11 -> "2023-24")
+    let yearDesc = null;
+    if (yearId) {
+      const years = await apiService.fetchYears();
+      const match = years.find(y => String(y.yearId) === String(yearId));
+      if (match) yearDesc = match.yearDesc;
+    }
 
-    // Pass them to the model
     const schools = await schoolModel.getLocalSchoolList(
-      stcode11,
-      dtcode11,
-      parseInt(page),
-      parseInt(limit)
+      stcode11, 
+      dtcode11, 
+      parseInt(page), 
+      parseInt(limit),
+      category,
+      management,
+      yearDesc // [NEW] Pass the string
     );
-
+    
     res.json(schools);
+  } catch (err) { 
+    res.status(500).json({ error: err.message }); 
+  }
+};
+
+exports.getFilters = async (req, res) => {
+  try {
+    const filters = await schoolModel.getDistinctFilters();
+    res.json(filters);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -344,4 +362,144 @@ exports.getStats = async (req, res) => {
     { schoolId }
   );
   res.json(data);
+};
+
+const getSocialSum = (jsonList, categoryName) => {
+  if (!jsonList || !Array.isArray(jsonList)) return 0;
+
+  // Calculate row total helper
+  const rowTotal = (row) => {
+    const fields = [
+      "pp1B",
+      "pp1G",
+      "pp2B",
+      "pp2G",
+      "pp3B",
+      "pp3G",
+      "c1B",
+      "c1G",
+      "c2B",
+      "c2G",
+      "c3B",
+      "c3G",
+      "c4B",
+      "c4G",
+      "c5B",
+      "c5G",
+      "c6B",
+      "c6G",
+      "c7B",
+      "c7G",
+      "c8B",
+      "c8G",
+      "c9B",
+      "c9G",
+      "c10B",
+      "c10G",
+      "c11B",
+      "c11G",
+      "c12B",
+      "c12G",
+    ];
+    return fields.reduce((sum, key) => sum + (parseInt(row[key]) || 0), 0);
+  };
+
+  if (categoryName === "ALL") {
+    return jsonList.reduce((acc, row) => acc + rowTotal(row), 0);
+  }
+
+  const found = jsonList.find((i) =>
+    i.enrollmentName?.toLowerCase().includes(categoryName.toLowerCase())
+  );
+  return found ? rowTotal(found) : 0;
+};
+
+exports.getLocalSchoolDetails = async (req, res) => {
+  try {
+    const { schoolId } = req.params;
+    const school = await schoolModel.getSchoolById(schoolId);
+
+    if (!school) {
+      return res
+        .status(404)
+        .json({
+          error: "School not found in local database. Please sync it first.",
+        });
+    }
+
+    // Parse JSON fields (Handle both stringified JSON and pre-parsed JSONB)
+    const parse = (val) =>
+      (typeof val === "string" ? JSON.parse(val) : val) || [];
+    const socialGen = parse(school.social_data_general_sc_st_obc);
+    const socialCwsn = parse(school.social_data_cwsn); // Flag 2
+    const socialEws = parse(school.social_data_ews); // Flag 4
+
+    // Construct the response object to match Frontend Interfaces
+    const response = {
+      profile: {
+        udise_code: school.udise_code,
+        school_name: school.school_name,
+        state_name: school.state_name,
+        district_name: school.district_name,
+        block_name: school.block_name,
+        cluster: school.cluster_name,
+        village: school.village_ward_name,
+        pincode: "", // Add to DB if available, else empty
+        category_name: school.school_type, // Mapping school_type to category for display
+        management_type: "Department of Education", // Default or map if available
+        establishment_year: 0, // Map if available
+        head_master: school.head_master_name,
+        school_status: school.school_status,
+        year_desc: school.year_desc,
+      },
+      facility: {
+        toilet_boys: school.total_toilets_boys,
+        toilet_girls: school.total_toilets_girls,
+        electricity: school.has_electricity,
+        library: school.has_library,
+        playground: school.has_playground,
+        drinking_water: school.has_drinking_water_facility,
+        ramp: false, // Map if available in DB
+        boundary_wall: "Unknown", // Map if available
+        building_status: school.building_status,
+        classroom_count: school.total_classrooms_in_use,
+        furniture: "Unknown",
+      },
+      social: {
+        general: getSocialSum(socialGen, "General"),
+        caste_SC: getSocialSum(socialGen, "SC"),
+        caste_ST: getSocialSum(socialGen, "ST"),
+        OBC: getSocialSum(socialGen, "OBC"),
+        CWSN: getSocialSum(socialCwsn, "ALL"), // Sum all rows in Flag 2
+        EWS: getSocialSum(socialEws, "ALL"), // Sum all rows in Flag 4
+      },
+      teachers: {
+        total_teachers: school.total_teachers,
+        teachers_male: school.total_male_teachers,
+        teachers_female: school.total_female_teachers,
+        regular: school.total_regular_teachers,
+        contract: school.total_contract_teachers,
+      },
+      stats: {
+        students_total: school.total_students,
+        students_boys: school.total_boy_students,
+        students_girls: school.total_girl_students,
+      },
+    };
+
+    res.json(response);
+  } catch (err) {
+    console.error("Local Details Error:", err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+exports.getDashboardStats = async (req, res) => {
+  try {
+    const stats = await schoolModel.getDashboardStats();
+    res.json(stats);
+  } catch (err) {
+    console.error("Dashboard Stats Error:", err);
+    res.status(500).json({ error: err.message });
+  }
 };
