@@ -36,11 +36,6 @@ exports.syncDirectory = async (req, res) => {
       });
     }
 
-    console.log(
-      `📦 District Status: ${allObjectIds.length} Total | ${existingObjectIds.length} Existing | ${idsToSync.length} New`
-    );
-    console.log(`🚀 Syncing ${idsToSync.length} missing schools from GIS...`);
-
     // 4. Fetch ONLY the missing IDs
     const count = await apiService.syncSchoolsFromGIS(
       stcode11,
@@ -62,79 +57,92 @@ exports.syncDirectory = async (req, res) => {
 // 2. Step 2: Sync Full Details (Using UDISE+ Logic)
 exports.syncSchoolDetails = async (req, res) => {
   try {
-    const { stcode11, dtcode11, yearId } = req.body;
-    const validYearId = yearId && parseInt(yearId) > 0 ? yearId : 11;
+    const { stcode11, dtcode11, yearId, udiseList, batchSize, strictMode } = req.body; // [NEW] Read config
+    
+    const validYearId = (yearId && parseInt(yearId) > 0) ? yearId : 11;
+    
+    // [CONFIG] Set defaults if not provided
+    const CHUNK_SIZE = (batchSize && parseInt(batchSize) > 0) ? parseInt(batchSize) : 5; 
+    const IS_STRICT = strictMode === true; // Default false if undefined
 
-    // A. Fetch Years Metadata (Reliable Source)
+    // A. Fetch Years Metadata
     const yearsMeta = await apiService.fetchYears();
-    const selectedYearMeta = yearsMeta.find(
-      (y) => String(y.yearId) === String(validYearId)
-    );
+    const selectedYearMeta = yearsMeta.find(y => String(y.yearId) === String(validYearId));
+    const yearDesc = selectedYearMeta ? selectedYearMeta.yearDesc : `${validYearId}`;
 
-    // Fallback: If not found in meta, use a generic string or the ID, but ensure it's NOT NULL
-    const yearDesc = selectedYearMeta
-      ? selectedYearMeta.yearDesc
-      : `${validYearId}`;
-
-    // B. Get UDISE Codes
-    const schools = await schoolModel.getSchoolsForDetailSync(
-      stcode11,
-      dtcode11
-    );
-
+    // B. Determine List
+    let schools = [];
+    if (udiseList && Array.isArray(udiseList) && udiseList.length > 0) {
+      schools = udiseList.map(code => ({ udise_code: code }));
+    } else {
+      schools = await schoolModel.getSchoolsForDetailSync(stcode11, dtcode11);
+    }
+    
     if (!schools.length) {
-      return res.json({
-        success: false,
-        message: "No schools in Directory. Run Step 1 first.",
-      });
+      return res.json({ success: false, message: "No schools found to sync." });
     }
 
-    console.log(
-      `🚀 Syncing details for ${schools.length} schools (Year: ${yearDesc})...`
-    );
 
     let processed = 0;
     let skipped = 0;
     let failed = 0;
-    const CHUNK_SIZE = 5;
-
+    
+    // [UPDATED LOOP] Use dynamic CHUNK_SIZE
     for (let i = 0; i < schools.length; i += CHUNK_SIZE) {
       const chunk = schools.slice(i, i + CHUNK_SIZE);
-
+      
       const promises = chunk.map(async (school) => {
         try {
-          // [CHECK]: Optimization - Check DB before API call
-          const exists = await schoolModel.checkSchoolDataExists(
-            school.udise_code,
-            yearDesc
-          );
-          if (exists) {
-            skipped++;
-            return;
+          // [CHECK 1]: Already Exists?
+          const existingRecord = await schoolModel.checkSchoolDataExists(school.udise_code, yearDesc);
+          
+          if (existingRecord) {
+            // If Strict Mode is ON, we might want to re-check validity even if it exists. 
+            // But for now, let's keep the standard "if name exists, skip" logic to save time.
+            if (existingRecord.school_name) {
+              skipped++;
+              return; 
+            } else {
+              await schoolModel.logSkippedSchool(
+                school.udise_code, stcode11, dtcode11, yearDesc, "Already Exists (Incomplete Data)"
+              );
+              skipped++;
+              return;
+            }
           }
 
-          // [ACTION]: Fetch & Upsert
-          const fullData = await apiService.fetchFullSchoolData(
-            school.udise_code,
-            validYearId
-          );
-          if (fullData) {
-            // [FIX]: Inject the reliable yearDesc from metadata into the data object
-            fullData.yearDesc = yearDesc;
+          // [ACTION]: Fetch
+          const fullData = await apiService.fetchFullSchoolData(school.udise_code, validYearId);
+          
+          // [CHECK 2]: Data Validation
+          const hasBasicData = fullData && fullData.report && fullData.report.schoolName;
+          
+          // Logic:
+          // If Strict Mode = TRUE: We REQUIRE schoolName. If missing -> Fail/Skip.
+          // If Strict Mode = FALSE: We allow partial data (though DB constraints might still fail later).
+          
+          const isValid = IS_STRICT ? hasBasicData : (fullData !== null); 
 
+          if (isValid) {
+            fullData.yearDesc = yearDesc; 
             await schoolModel.upsertSchoolDetails(fullData);
+            await schoolModel.removeSkippedSchool(school.udise_code);
             processed++;
           } else {
+            const reason = IS_STRICT ? "Validation Failed (Strict Mode)" : "API Returned Empty";
+            await schoolModel.logSkippedSchool(
+              school.udise_code, stcode11, dtcode11, yearDesc, reason
+            );
             failed++;
           }
+
         } catch (innerErr) {
-          if (innerErr.code === "23505") {
-            console.warn(`⚠️ Skipped Duplicate: ${school.udise_code}`);
-            skipped++;
+          if (innerErr.code === '23505') {
+            skipped++; 
           } else {
-            console.error(
-              `❌ Error processing ${school.udise_code}:`,
-              innerErr.message
+            console.error(`❌ Error processing ${school.udise_code}:`, innerErr.message);
+            await schoolModel.logSkippedSchool(
+              school.udise_code, stcode11, dtcode11, yearDesc, `Error: ${innerErr.message}`
             );
             failed++;
           }
@@ -142,51 +150,70 @@ exports.syncSchoolDetails = async (req, res) => {
       });
 
       await Promise.all(promises);
-
-      if ((i + CHUNK_SIZE) % 50 === 0) {
-        console.log(`📊 Progress: ${processed} synced, ${skipped} skipped.`);
-      }
     }
 
-    res.json({
-      success: true,
-      count: processed,
+    res.json({ 
+      success: true, 
+      count: processed, 
       skipped: skipped,
       failed: failed,
-      message: `Sync Complete: ${processed} updated, ${skipped} skipped.`,
+      message: `Sync Complete: ${processed} updated, ${skipped} skipped, ${failed} failed.` 
     });
+
   } catch (err) {
     console.error("Critical Sync Error:", err);
     res.status(500).json({ success: false, error: err.message });
   }
 };
 
+// [NEW] Get Skipped List Controller
+exports.getSkippedList = async (req, res) => {
+  try {
+    const { page = 1, limit = 50 } = req.query;
+    const result = await schoolModel.getSkippedSchools(
+      parseInt(page),
+      parseInt(limit)
+    );
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
 // ... keep existing getMySchools & proxies
 exports.getMySchools = async (req, res) => {
   try {
-    const { stcode11, dtcode11, page = 1, limit = 50, category, management, yearId } = req.query;
-    
+    const {
+      stcode11,
+      dtcode11,
+      page = 1,
+      limit = 50,
+      category,
+      management,
+      yearId,
+    } = req.query;
+
     // [NEW] Resolve Year ID -> Description (e.g., 11 -> "2023-24")
     let yearDesc = null;
     if (yearId) {
       const years = await apiService.fetchYears();
-      const match = years.find(y => String(y.yearId) === String(yearId));
+      const match = years.find((y) => String(y.yearId) === String(yearId));
       if (match) yearDesc = match.yearDesc;
     }
 
     const schools = await schoolModel.getLocalSchoolList(
-      stcode11, 
-      dtcode11, 
-      parseInt(page), 
+      stcode11,
+      dtcode11,
+      parseInt(page),
       parseInt(limit),
       category,
       management,
       yearDesc // [NEW] Pass the string
     );
-    
+
     res.json(schools);
-  } catch (err) { 
-    res.status(500).json({ error: err.message }); 
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 };
 
@@ -297,8 +324,6 @@ exports.getSocialData = async (req, res) => {
   const yearId = 11;
 
   try {
-    console.log(`📡 Fetching Social Data for School: ${schoolId}`);
-
     // Fetch Flag 1 (Social Cat), Flag 2 (CWSN), Flag 4 (EWS)
     const [social1, social2, social4] = await Promise.all([
       apiService.fetchUdisePlusData("getSocialData", {
@@ -420,11 +445,9 @@ exports.getLocalSchoolDetails = async (req, res) => {
     const school = await schoolModel.getSchoolById(schoolId);
 
     if (!school) {
-      return res
-        .status(404)
-        .json({
-          error: "School not found in local database. Please sync it first.",
-        });
+      return res.status(404).json({
+        error: "School not found in local database. Please sync it first.",
+      });
     }
 
     // Parse JSON fields (Handle both stringified JSON and pre-parsed JSONB)

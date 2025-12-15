@@ -262,13 +262,14 @@ exports.getSchoolsForDetailSync = async (stcode11, dtcode11) => {
 };
 
 exports.checkSchoolDataExists = async (udiseCode, yearDesc) => {
-  // We explicitly check for the composite pair
   const query = `
-    SELECT 1 FROM udise_data.school_udise_data 
+    SELECT school_name FROM udise_data.school_udise_data 
     WHERE udise_code = $1 AND year_desc = $2
   `;
   const result = await pool.query(query, [String(udiseCode), String(yearDesc)]);
-  return result.rows.length > 0;
+  
+  // Return the first row (or undefined if not found)
+  return result.rows[0]; 
 };
 
 exports.getDistinctFilters = async () => {
@@ -509,4 +510,49 @@ exports.getDashboardStats = async () => {
     category: cat.rows,
     states: states.rows
   };
+};
+
+exports.logSkippedSchool = async (udiseCode, stcode11, dtcode11, yearDesc, reason) => {
+  const query = `
+    INSERT INTO udise_data.skipped_udise 
+    (udise_code, stcode11, dtcode11, year_desc, reason)
+    VALUES ($1, $2, $3, $4, $5)
+    ON CONFLICT (udise_code, year_desc) 
+    DO UPDATE SET reason = EXCLUDED.reason, created_at = NOW()
+  `;
+  await pool.query(query, [udiseCode, stcode11, dtcode11, yearDesc, reason]);
+};
+
+// [NEW] Get list of skipped schools
+exports.getSkippedSchools = async (page = 1, limit = 50) => {
+  const offset = (page - 1) * limit;
+  
+  const dataQuery = `
+    SELECT s.*, l.stname, l.dtname
+    FROM udise_data.skipped_udise s
+    LEFT JOIN udise_data.school_udise_list l ON s.udise_code = l.schcd
+    ORDER BY s.created_at DESC
+    LIMIT $1 OFFSET $2
+  `;
+  
+  const countQuery = `SELECT COUNT(*) as total FROM udise_data.skipped_udise`;
+
+  const [data, count] = await Promise.all([
+    pool.query(dataQuery, [limit, offset]),
+    pool.query(countQuery)
+  ]);
+
+  return {
+    data: data.rows,
+    meta: {
+      page,
+      limit,
+      total: parseInt(count.rows[0].total)
+    }
+  };
+};
+
+// [NEW] Remove from skipped table (after successful sync)
+exports.removeSkippedSchool = async (udiseCode) => {
+  await pool.query("DELETE FROM udise_data.skipped_udise WHERE udise_code = $1", [udiseCode]);
 };
