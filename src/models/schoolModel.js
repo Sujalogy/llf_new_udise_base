@@ -12,28 +12,146 @@ exports.getObjectIds = async (stcode11, dtcode11) => {
   return result.rows.map((r) => r.object_id);
 };
 
-exports.upsertDirectorySchool = async (data) => {
-  await pool.query(
-    `INSERT INTO udise_data.school_udise_list
-    (schcd, objectid, latitude, longitude, pincode, stname, dtname, stcode11, dtcode11)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-    ON CONFLICT (schcd) DO UPDATE SET 
-      latitude = EXCLUDED.latitude,
-      longitude = EXCLUDED.longitude,
-      objectid = EXCLUDED.objectid,
-      pincode = EXCLUDED.pincode`,
-    [
-      data.schcd,
-      data.objectid,
-      data.latitude,
-      data.longitude,
-      data.pincode,
-      data.stname,
-      data.dtname,
-      data.stcode11,
-      data.dtcode11,
-    ]
+exports.getExistingObjectIds = async (stcode11, dtcode11) => {
+  const result = await pool.query(
+    "SELECT objectid FROM udise_data.school_udise_list WHERE stcode11=$1 AND dtcode11=$2",
+    [stcode11, dtcode11]
   );
+  return result.rows.map((r) => r.objectid);
+};
+
+exports.upsertSchoolDetails = async (data) => {
+  const query = `
+    INSERT INTO udise_data.school_udise_data (
+      udise_code, school_id, school_name, year_desc,
+      
+      state_name, district_name, block_name, village_ward_name, cluster_name,
+      
+      head_master_name, school_status, school_type,
+      medium_of_instruction_1, medium_of_instruction_2,
+      is_minority_school, has_anganwadi, 
+      anganwadi_boy_students, anganwadi_girl_students,
+      is_cce_implemented, has_school_management_committee,
+      has_approach_road, is_shift_school,
+      
+      building_status, total_classrooms_in_use, good_condition_classrooms,
+      total_toilets_boys, total_toilets_girls, has_drinking_water_facility,
+      has_electricity, has_library, has_playground, has_medical_checkup,
+      has_integrated_lab, has_internet,
+      
+      total_teachers, total_male_teachers, total_female_teachers,
+      total_regular_teachers, total_contract_teachers,
+      lowest_class, highest_class,
+      
+      total_boy_students, total_girl_students, total_students,
+      
+      social_data_general_sc_st_obc, social_data_religion,
+      social_data_cwsn, social_data_rte, social_data_ews
+    ) VALUES (
+      $1, $2, $3, $4,
+      $45, $46, $47, $48, $49,
+      $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
+      $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29,
+      $30, $31, $32, $33, $34, $35, $36,
+      $37, $38, $39,
+      $40, $41, $42, $43, $44
+    )
+    ON CONFLICT (udise_code, year_desc) DO UPDATE SET
+      school_id = EXCLUDED.school_id,
+      school_name = EXCLUDED.school_name,
+      total_students = EXCLUDED.total_students,
+      total_teachers = EXCLUDED.total_teachers,
+      updated_at = NOW();
+  `;
+
+  // Safe access helpers
+  const p = data.profile || {};
+  const f = data.facility || {};
+  const r = data.report || {};
+  const s = data.stats || {};
+  const soc = data.social || {};
+
+  const num = (val) => (isNaN(parseInt(val, 10)) ? 0 : parseInt(val, 10));
+  const intOrNull = (val) =>
+    isNaN(parseInt(val, 10)) ? null : parseInt(val, 10);
+  const toBool = (val) =>
+    val
+      ? String(val).toLowerCase().includes("yes") || String(val).startsWith("1")
+      : false;
+
+  const totalTeachers = r.totalTeacher
+    ? num(r.totalTeacher)
+    : num(s.totalTeacherReg) + num(s.totalTeacherCon);
+
+  const values = [
+    // $1 - $4
+    data.udiseCode,
+    data.schoolId,
+    r.schoolName,
+    // [FIX]: Use the injected yearDesc from controller (or fallback to report if needed)
+    data.yearDesc || r.yearDesc,
+
+    // $5 - $9 (Text Fields)
+    p.headMasterName,
+    r.schStatusName,
+    r.schTypeDesc,
+    p.mediumOfInstrName1,
+    p.mediumOfInstrName2,
+
+    // $10 - $17 (Flags)
+    toBool(p.minorityYnDesc),
+    toBool(p.anganwadiYnDesc),
+    num(p.anganwadiStuB),
+    num(p.anganwadiStuG),
+    toBool(p.cceYnDesc),
+    toBool(p.smcYnDesc),
+    toBool(p.approachRoadYnDesc),
+    toBool(p.shiftSchYnDesc),
+
+    // $18 - $29 (Infrastructure)
+    f.bldStatus,
+    num(f.clsrmsInst),
+    num(f.clsrmsGd),
+    num(f.toiletb),
+    num(f.toiletg),
+    toBool(f.drinkWaterYnDesc),
+    toBool(f.electricityYnDesc),
+    toBool(f.libraryYnDesc),
+    toBool(f.playgroundYnDesc),
+    toBool(f.medchkYnDesc),
+    toBool(f.integratedLabYnDesc),
+    toBool(f.internetYnDesc),
+
+    // $30 - $36 (Teachers)
+    totalTeachers,
+    num(r.totMale),
+    num(r.totFemale),
+    num(r.tchReg),
+    num(r.tchCont),
+    intOrNull(r.lowClass),
+    intOrNull(r.highClass),
+
+    // $37 - $39 (Students)
+    num(s.totalBoy),
+    num(s.totalGirl),
+    num(s.totalCount),
+
+    // $40 - $44 (JSON Data)
+    JSON.stringify(soc.flag1 || []),
+    JSON.stringify(soc.flag2 || []),
+    JSON.stringify(soc.flag3 || []),
+    JSON.stringify(soc.flag5 || []),
+    JSON.stringify(soc.flag4 || []),
+
+    // $45 - $49 (Location)
+    r.stateName,
+    r.districtName,
+    r.blockName,
+    r.villWardName,
+    r.clusterName,
+  ];
+
+  await pool.query(query, values);
 };
 
 // -------------------------------------------------------------------------
@@ -127,7 +245,19 @@ exports.getSchoolsForDetailSync = async (stcode11, dtcode11) => {
   return result.rows;
 };
 
+exports.checkSchoolDataExists = async (udiseCode, yearDesc) => {
+  // We explicitly check for the composite pair
+  const query = `
+    SELECT 1 FROM udise_data.school_udise_data 
+    WHERE udise_code = $1 AND year_desc = $2
+  `;
+  const result = await pool.query(query, [String(udiseCode), String(yearDesc)]);
+  return result.rows.length > 0;
+};
+
 exports.upsertSchoolDetails = async (data) => {
+  // [UPDATE] Changed ON CONFLICT to use (udise_code, year_desc)
+  // Ensure you have a UNIQUE constraint/index on these two columns in your DB
   const query = `
     INSERT INTO udise_data.school_udise_data (
       udise_code, school_id, school_name, year_desc,
@@ -164,10 +294,9 @@ exports.upsertSchoolDetails = async (data) => {
       $37, $38, $39,
       $40, $41, $42, $43, $44
     )
-    ON CONFLICT (udise_code) DO UPDATE SET
+    ON CONFLICT (udise_code, year_desc) DO UPDATE SET
       school_id = EXCLUDED.school_id,
       school_name = EXCLUDED.school_name,
-      year_desc = EXCLUDED.year_desc,
       state_name = EXCLUDED.state_name,
       district_name = EXCLUDED.district_name,
       block_name = EXCLUDED.block_name,
@@ -185,7 +314,6 @@ exports.upsertSchoolDetails = async (data) => {
   const s = data.stats || {};
   const soc = data.social || {};
 
-  // Helper to parse numbers safely
   const num = (val) => {
     const n = parseInt(val, 10);
     return isNaN(n) ? 0 : n;
@@ -196,12 +324,10 @@ exports.upsertSchoolDetails = async (data) => {
     return isNaN(n) ? null : n;
   };
 
-  // --- NEW HELPER: Converts "1-Yes", "2-No", "Yes", "No" to boolean ---
   const toBool = (val) => {
     if (!val) return false;
-    // Check if the string contains "Yes" (case insensitive) or starts with "1"
     const str = String(val).toLowerCase();
-    return str.includes('yes') || str.startsWith('1');
+    return str.includes("yes") || str.startsWith("1");
   };
 
   const totalTeachers = r.totalTeacher
@@ -213,7 +339,7 @@ exports.upsertSchoolDetails = async (data) => {
     data.udiseCode,
     data.schoolId,
     r.schoolName,
-    r.yearDesc,
+    r.yearDesc, // Using the year description from API (e.g., "2023-24")
 
     // $5 - $9 (Text Fields)
     p.headMasterName,
@@ -222,15 +348,15 @@ exports.upsertSchoolDetails = async (data) => {
     p.mediumOfInstrName1,
     p.mediumOfInstrName2,
 
-    // $10 - $17 (Flags - wrapped in toBool)
-    toBool(p.minorityYnDesc),       // $10
-    toBool(p.anganwadiYnDesc),      // $11
+    // $10 - $17 (Flags)
+    toBool(p.minorityYnDesc),
+    toBool(p.anganwadiYnDesc),
     num(p.anganwadiStuB),
     num(p.anganwadiStuG),
-    toBool(p.cceYnDesc),            // $14
-    toBool(p.smcYnDesc),            // $15
-    toBool(p.approachRoadYnDesc),   // $16
-    toBool(p.shiftSchYnDesc),       // $17
+    toBool(p.cceYnDesc),
+    toBool(p.smcYnDesc),
+    toBool(p.approachRoadYnDesc),
+    toBool(p.shiftSchYnDesc),
 
     // $18 - $29 (Infrastructure)
     f.bldStatus,
@@ -238,13 +364,13 @@ exports.upsertSchoolDetails = async (data) => {
     num(f.clsrmsGd),
     num(f.toiletb),
     num(f.toiletg),
-    toBool(f.drinkWaterYnDesc),    // $23
-    toBool(f.electricityYnDesc),   // $24
-    toBool(f.libraryYnDesc),       // $25
-    toBool(f.playgroundYnDesc),    // $26
-    toBool(f.medchkYnDesc),        // $27
-    toBool(f.integratedLabYnDesc), // $28
-    toBool(f.internetYnDesc),      // $29
+    toBool(f.drinkWaterYnDesc),
+    toBool(f.electricityYnDesc),
+    toBool(f.libraryYnDesc),
+    toBool(f.playgroundYnDesc),
+    toBool(f.medchkYnDesc),
+    toBool(f.integratedLabYnDesc),
+    toBool(f.internetYnDesc),
 
     // $30 - $36 (Teachers)
     totalTeachers,
@@ -267,12 +393,12 @@ exports.upsertSchoolDetails = async (data) => {
     JSON.stringify(soc.flag5 || []),
     JSON.stringify(soc.flag4 || []),
 
-    // $45 - $49 (New Location Fields)
-    r.stateName,     // $45
-    r.districtName,  // $46
-    r.blockName,     // $47
-    r.villWardName,  // $48
-    r.clusterName,   // $49
+    // $45 - $49 (Location)
+    r.stateName,
+    r.districtName,
+    r.blockName,
+    r.villWardName,
+    r.clusterName,
   ];
 
   await pool.query(query, values);

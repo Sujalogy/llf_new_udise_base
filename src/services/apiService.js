@@ -66,7 +66,6 @@ exports.fetchUdisePlusData = async (endpoint, params) => {
     });
     return response.data;
   } catch (error) {
-    console.error(`Proxy Error [${endpoint}]:`, error.message);
     return { status: false, message: "API Error" };
   }
 };
