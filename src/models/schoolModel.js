@@ -690,3 +690,105 @@ exports.getSkippedSchools = async (page = 1, limit = 50) => {
 exports.removeSkippedSchool = async (udiseCode) => {
   await pool.query("DELETE FROM udise_data.skipped_udise WHERE udise_code = $1", [udiseCode]);
 };
+
+exports.getSkippedSummary = async ({ yearId, stcode11 }) => {
+  const params = [];
+  let paramIdx = 1;
+  const conditions = [];
+
+  // Filter by State if provided
+  if (stcode11 && stcode11 !== 'all') {
+    conditions.push(`s.stcode11 = $${paramIdx++}`);
+    params.push(stcode11);
+  }
+
+  // Filter by Year if provided (Matches year_desc column)
+  if (yearId && yearId !== 'all') {
+    // Note: If yearId is numeric (e.g. 11) but DB stores "2023-24", you need to convert it first.
+    // Assuming here we pass the exact string stored in DB or ID matches.
+    conditions.push(`s.year_desc = $${paramIdx++}`); 
+    params.push(yearId);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+  const query = `
+    SELECT 
+      l.stname as state,
+      l.dtname as district,
+      s.year_desc as year,
+      COUNT(*)::int as count
+    FROM udise_data.skipped_udise s
+    LEFT JOIN udise_data.school_udise_list l ON s.udise_code = l.schcd
+    ${whereClause}
+    GROUP BY l.stname, l.dtname, s.year_desc
+    ORDER BY l.stname, count DESC
+  `;
+
+  const result = await pool.query(query, params);
+  return result.rows;
+};
+
+exports.getSkippedForExport = async ({ yearId, stcode11, dtcode11 }) => {
+  const params = [];
+  let paramIdx = 1;
+  const conditions = [];
+
+  if (stcode11 && stcode11 !== 'all') {
+    conditions.push(`s.stcode11 = $${paramIdx++}`);
+    params.push(stcode11);
+  }
+
+  if (dtcode11 && dtcode11 !== 'all') {
+    conditions.push(`s.dtcode11 = $${paramIdx++}`);
+    params.push(dtcode11);
+  }
+
+  if (yearId && yearId !== 'all') {
+    conditions.push(`s.year_desc = $${paramIdx++}`);
+    params.push(yearId);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+  const query = `
+    SELECT 
+      s.udise_code,
+      s.reason,
+      s.year_desc,
+      s.created_at,
+      l.stname,
+      l.dtname,
+      -- Attempt to get school name from directory or skipped log if available
+      COALESCE(d.school_name, 'Unknown') as school_name
+    FROM udise_data.skipped_udise s
+    LEFT JOIN udise_data.school_udise_list l ON s.udise_code = l.schcd
+    LEFT JOIN udise_data.school_udise_data d ON s.udise_code = d.udise_code
+    ${whereClause}
+    ORDER BY s.created_at DESC
+  `;
+
+  const result = await pool.query(query, params);
+  return result.rows;
+};
+
+exports.getStateMatrix = async () => {
+  // Uses GROUP BY ROLLUP to get State aggregates AND District aggregates in one query
+  const query = `
+    SELECT 
+      state_name,
+      district_name,
+      COUNT(udise_code)::int as total_schools,
+      COUNT(DISTINCT district_name)::int as total_districts,
+      COUNT(DISTINCT block_name)::int as total_blocks,
+      SUM(total_teachers)::int as total_teachers,
+      SUM(total_students)::int as total_students
+    FROM udise_data.school_udise_data
+    WHERE state_name IS NOT NULL
+    GROUP BY ROLLUP(state_name, district_name)
+    ORDER BY state_name NULLS LAST, district_name NULLS LAST
+  `;
+
+  const result = await pool.query(query);
+  return result.rows;
+};

@@ -650,3 +650,123 @@ exports.getDashboardStats = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
+
+exports.getSkippedSummary = async (req, res) => {
+  try {
+    const { yearId, stcode11 } = req.query;
+    
+    // Optional: Resolve yearId to yearDesc if your DB stores yearDesc
+    // For now passing yearId directly assuming the frontend sends the value stored in DB (or handle conversion)
+    const summary = await schoolModel.getSkippedSummary({ 
+      yearId, 
+      stcode11 
+    });
+    
+    res.json(summary);
+  } catch (err) {
+    console.error("Skipped Summary Error:", err);
+    res.status(500).json({ error: "Failed to fetch skipped summary" });
+  }
+};
+
+exports.exportSkippedList = async (req, res) => {
+  try {
+    const { format = 'json', yearId, stcode11, dtcode11 } = req.query;
+    
+    const data = await schoolModel.getSkippedForExport({ 
+      yearId, 
+      stcode11, 
+      dtcode11 
+    });
+
+    if (format === 'csv') {
+      // Basic CSV conversion
+      const headers = ['UDISE Code', 'School Name', 'State', 'District', 'Year', 'Reason', 'Date'];
+      const csvRows = [headers.join(',')];
+      
+      data.forEach(row => {
+        csvRows.push([
+          row.udise_code,
+          `"${(row.school_name || '').replace(/"/g, '""')}"`, // Escape quotes
+          row.stname,
+          row.dtname,
+          row.year_desc,
+          `"${(row.reason || '').replace(/"/g, '""')}"`,
+          new Date(row.created_at).toLocaleDateString()
+        ].join(','));
+      });
+      
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', 'attachment; filename=skipped_schools.csv');
+      return res.send(csvRows.join('\n'));
+    }
+
+    // Default JSON
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', 'attachment; filename=skipped_schools.json');
+    res.json(data);
+
+  } catch (err) {
+    console.error("Export Skipped Error:", err);
+    res.status(500).json({ error: "Failed to export skipped list" });
+  }
+};
+
+exports.getStateMatrix = async (req, res) => {
+  try {
+    const rawRows = await schoolModel.getStateMatrix();
+    
+    // Process flat ROLLUP rows into a hierarchical structure
+    const stateMap = {};
+
+    rawRows.forEach(row => {
+      // Skip the Grand Total row (where state is null)
+      if (!row.state_name) return;
+
+      // Initialize State Entry if missing
+      if (!stateMap[row.state_name]) {
+        stateMap[row.state_name] = {
+          type: 'state',
+          name: row.state_name,
+          stats: { schools: 0, districts: 0, blocks: 0, teachers: 0, students: 0 },
+          districts: []
+        };
+      }
+
+      if (!row.district_name) {
+        // [STATE SUMMARY ROW] - This contains the totals for the state
+        stateMap[row.state_name].stats = {
+          schools: parseInt(row.total_schools || 0),
+          districts: parseInt(row.total_districts || 0),
+          blocks: parseInt(row.total_blocks || 0),
+          teachers: parseInt(row.total_teachers || 0),
+          students: parseInt(row.total_students || 0)
+        };
+      } else {
+        // [DISTRICT DETAIL ROW] - Add to the districts array
+        stateMap[row.state_name].districts.push({
+          type: 'district',
+          name: row.district_name,
+          stats: {
+             schools: parseInt(row.total_schools || 0),
+             districts: 1,
+             blocks: parseInt(row.total_blocks || 0),
+             teachers: parseInt(row.total_teachers || 0),
+             students: parseInt(row.total_students || 0)
+          }
+        });
+      }
+    });
+
+    // Convert Map to Sorted Array
+    const hierarchy = Object.values(stateMap).sort((a, b) => 
+      a.name.localeCompare(b.name)
+    );
+
+    res.json(hierarchy);
+  } catch (err) {
+    console.error("Matrix Error:", err);
+    res.status(500).json({ error: err.message });
+  }
+};

@@ -2,9 +2,6 @@ const axios = require("axios");
 const config = require("../config/constants");
 const schoolModel = require("../models/schoolModel");
 
-// ------------------------------------------------------------------
-// STEP 1 SERVICE: Sync Directory from GIS (Using Object IDs)
-// ------------------------------------------------------------------
 exports.syncSchoolsFromGIS = async (stcode11, dtcode11, objectIds) => {
   const url = config.gis.url;
   const chunkSize = 50; // GIS API limit usually
@@ -50,10 +47,6 @@ exports.syncSchoolsFromGIS = async (stcode11, dtcode11, objectIds) => {
   }
   return totalInserted;
 };
-
-// ------------------------------------------------------------------
-// STEP 2 HELPERS: Proxy & Detail Fetching
-// ------------------------------------------------------------------
 
 // Proxy to UDISE+
 exports.fetchUdisePlusData = async (endpoint, params) => {

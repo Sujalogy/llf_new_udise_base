@@ -12,8 +12,11 @@ router.post("/sync-details", schoolController.syncSchoolDetails); // Level 2 (Fu
 router.get("/export/list", exportController.downloadSchoolList);
 router.get("/local-details/:schoolId", schoolController.getLocalSchoolDetails);
 router.get("/skipped", schoolController.getSkippedList); // [NEW]
+router.get("/skipped/summary", schoolController.getSkippedSummary); // [NEW] Summary Grouped Stats
+router.get("/skipped/export", schoolController.exportSkippedList);  // [NEW] Download CSV/JSON
 router.post("/sync/details", schoolController.syncSchoolDetails);
 router.get("/stats/dashboard", schoolController.getDashboardStats);
+router.get("/stats/matrix", schoolController.getStateMatrix);
 
 // --- 2. UDISE+ PROXY ROUTES ---
 router.get("/search", schoolController.searchSchool);
