@@ -17,6 +17,7 @@ exports.getExistingObjectIds = async (stcode11, dtcode11) => {
 };
 
 exports.upsertSchoolDetails = async (data) => {
+  // [FIX 1] Added 'category' to INSERT, VALUES ($51), and UPDATE clauses
   const query = `
     INSERT INTO udise_data.school_udise_data (
       udise_code, school_id, school_name, year_desc,
@@ -24,6 +25,8 @@ exports.upsertSchoolDetails = async (data) => {
       state_name, district_name, block_name, village_ward_name, cluster_name,
       
       head_master_name, school_status, school_type,
+      management_type, category,
+      
       medium_of_instruction_1, medium_of_instruction_2,
       is_minority_school, has_anganwadi, 
       anganwadi_boy_students, anganwadi_girl_students,
@@ -46,7 +49,9 @@ exports.upsertSchoolDetails = async (data) => {
     ) VALUES (
       $1, $2, $3, $4,
       $45, $46, $47, $48, $49,
-      $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
+      $5, $6, $7, 
+      $50, $51,
+      $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
       $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29,
       $30, $31, $32, $33, $34, $35, $36,
       $37, $38, $39,
@@ -55,15 +60,16 @@ exports.upsertSchoolDetails = async (data) => {
     ON CONFLICT (udise_code, year_desc) DO UPDATE SET
       school_id = EXCLUDED.school_id,
       school_name = EXCLUDED.school_name,
+      management_type = EXCLUDED.management_type,
+      category = EXCLUDED.category,
       total_students = EXCLUDED.total_students,
-      total_teachers = EXCLUDED.total_teachers,
       updated_at = NOW();
   `;
 
   // Safe access helpers
   const p = data.profile || {};
   const f = data.facility || {};
-  const r = data.report || {};
+  const r = data.report || {}; // 'r' holds the API report data
   const s = data.stats || {};
   const soc = data.social || {};
 
@@ -74,77 +80,62 @@ exports.upsertSchoolDetails = async (data) => {
     val
       ? String(val).toLowerCase().includes("yes") || String(val).startsWith("1")
       : false;
-
   const totalTeachers = r.totalTeacher
     ? num(r.totalTeacher)
     : num(s.totalTeacherReg) + num(s.totalTeacherCon);
 
   const values = [
-    // $1 - $4
     data.udiseCode,
     data.schoolId,
     r.schoolName,
-    // [FIX]: Use the injected yearDesc from controller (or fallback to report if needed)
-    data.yearDesc || r.yearDesc,
-
-    // $5 - $9 (Text Fields)
+    data.yearDesc || r.yearDesc, // 1-4
     p.headMasterName,
     r.schStatusName,
-    r.schTypeDesc,
+    r.schTypeDesc, // 5-7 (School Type)
     p.mediumOfInstrName1,
-    p.mediumOfInstrName2,
-
-    // $10 - $17 (Flags)
+    p.mediumOfInstrName2, // 8-9
     toBool(p.minorityYnDesc),
     toBool(p.anganwadiYnDesc),
     num(p.anganwadiStuB),
-    num(p.anganwadiStuG),
+    num(p.anganwadiStuG), // 10-13
     toBool(p.cceYnDesc),
     toBool(p.smcYnDesc),
     toBool(p.approachRoadYnDesc),
-    toBool(p.shiftSchYnDesc),
-
-    // $18 - $29 (Infrastructure)
+    toBool(p.shiftSchYnDesc), // 14-17
     f.bldStatus,
     num(f.clsrmsInst),
     num(f.clsrmsGd),
     num(f.toiletb),
-    num(f.toiletg),
+    num(f.toiletg), // 18-22
     toBool(f.drinkWaterYnDesc),
     toBool(f.electricityYnDesc),
-    toBool(f.libraryYnDesc),
+    toBool(f.libraryYnDesc), // 23-25
     toBool(f.playgroundYnDesc),
     toBool(f.medchkYnDesc),
     toBool(f.integratedLabYnDesc),
-    toBool(f.internetYnDesc),
-
-    // $30 - $36 (Teachers)
+    toBool(f.internetYnDesc), // 26-29
     totalTeachers,
     num(r.totMale),
     num(r.totFemale),
     num(r.tchReg),
     num(r.tchCont),
     intOrNull(r.lowClass),
-    intOrNull(r.highClass),
-
-    // $37 - $39 (Students)
+    intOrNull(r.highClass), // 30-36
     num(s.totalBoy),
     num(s.totalGirl),
-    num(s.totalCount),
-
-    // $40 - $44 (JSON Data)
+    num(s.totalCount), // 37-39
     JSON.stringify(soc.flag1 || []),
     JSON.stringify(soc.flag2 || []),
     JSON.stringify(soc.flag3 || []),
     JSON.stringify(soc.flag5 || []),
-    JSON.stringify(soc.flag4 || []),
-
-    // $45 - $49 (Location)
+    JSON.stringify(soc.flag4 || []), // 40-44
     r.stateName,
     r.districtName,
     r.blockName,
     r.villWardName,
     r.clusterName,
+    r.schMgmtStateDesc, // 50 (Management)
+    r.schCategoryDesc,       // 51 [FIX: Map 'r.schCatDesc' to the new Category column]
   ];
 
   await pool.query(query, values);
@@ -167,7 +158,8 @@ exports.getLocalSchoolList = async (filters, page, limit) => {
       d.school_type,      -- Existing School Type
       d.category,         -- [NEW] Category
       d.management_type as management,
-      d.year_desc
+      d.year_desc,
+      d.total_students
     FROM udise_data.school_udise_list l
     JOIN udise_data.school_udise_data d ON l.schcd = d.udise_code
     ${whereSql}
@@ -261,54 +253,6 @@ exports.getDistinctFilters = async () => {
 };
 
 exports.upsertSchoolDetails = async (data) => {
-  // [UPDATE] Changed ON CONFLICT to use (udise_code, year_desc)
-  // Ensure you have a UNIQUE constraint/index on these two columns in your DB
-  const query = `
-    INSERT INTO udise_data.school_udise_data (
-      udise_code, school_id, school_name, year_desc,
-      
-      state_name, district_name, block_name, village_ward_name, cluster_name,
-      
-      head_master_name, school_status, school_type,
-      management_type,
-      medium_of_instruction_1, medium_of_instruction_2,
-      is_minority_school, has_anganwadi, 
-      anganwadi_boy_students, anganwadi_girl_students,
-      is_cce_implemented, has_school_management_committee,
-      has_approach_road, is_shift_school,
-      
-      building_status, total_classrooms_in_use, good_condition_classrooms,
-      total_toilets_boys, total_toilets_girls, has_drinking_water_facility,
-      has_electricity, has_library, has_playground, has_medical_checkup,
-      has_integrated_lab, has_internet,
-      
-      total_teachers, total_male_teachers, total_female_teachers,
-      total_regular_teachers, total_contract_teachers,
-      lowest_class, highest_class,
-      
-      total_boy_students, total_girl_students, total_students,
-      
-      social_data_general_sc_st_obc, social_data_religion,
-      social_data_cwsn, social_data_rte, social_data_ews
-    ) VALUES (
-      $1, $2, $3, $4,
-      $45, $46, $47, $48, $49,
-      $5, $6, $7, 
-      $50,
-      $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-      $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29,
-      $30, $31, $32, $33, $34, $35, $36,
-      $37, $38, $39,
-      $40, $41, $42, $43, $44
-    )
-    ON CONFLICT (udise_code, year_desc) DO UPDATE SET
-      school_id = EXCLUDED.school_id,
-      school_name = EXCLUDED.school_name,
-      management_type = EXCLUDED.management_type, -- Update on conflict
-      total_students = EXCLUDED.total_students,
-      updated_at = NOW();
-  `;
-
   // Safe access helpers
   const p = data.profile || {};
   const f = data.facility || {};
@@ -317,67 +261,235 @@ exports.upsertSchoolDetails = async (data) => {
   const soc = data.social || {};
 
   const num = (val) => (isNaN(parseInt(val, 10)) ? 0 : parseInt(val, 10));
-  const intOrNull = (val) =>
-    isNaN(parseInt(val, 10)) ? null : parseInt(val, 10);
+  const intOrNull = (val) => (isNaN(parseInt(val, 10)) ? null : parseInt(val, 10));
+  const decOrNull = (val) => (isNaN(parseFloat(val)) ? null : parseFloat(val));
   const toBool = (val) =>
     val
       ? String(val).toLowerCase().includes("yes") || String(val).startsWith("1")
       : false;
+
+  // Calculate total teachers if not provided directly
   const totalTeachers = r.totalTeacher
     ? num(r.totalTeacher)
     : num(s.totalTeacherReg) + num(s.totalTeacherCon);
 
+  const query = `
+    INSERT INTO udise_data.school_udise_data (
+      -- 1. Identity & Location
+      udise_code, school_id, school_name, year_desc,
+      state_name, district_name, block_name, village_ward_name, cluster_name,
+      school_phone, location_type,
+      
+      -- 2. Basic Details
+      head_master_name, school_status, school_type,
+      management_type, category,
+      establishment_year, is_pre_primary_section, residential_school_type,
+      is_cwsn_school, is_shift_school,
+      
+      -- 3. Instructions & Visits
+      medium_of_instruction_1, medium_of_instruction_2, 
+      medium_of_instruction_3, medium_of_instruction_4,
+      instructional_days, 
+      visits_by_brc, visits_by_crc, visits_by_district_officer,
+      
+      -- 4. Flags (Profile)
+      is_minority_school, has_anganwadi, 
+      anganwadi_boy_students, anganwadi_girl_students, anganwadi_teacher_trained,
+      is_cce_implemented, has_school_management_committee, has_approach_road,
+      
+      -- 5. Facility & Infrastructure
+      building_status, total_classrooms_in_use, good_condition_classrooms,
+      total_toilets_boys, total_toilets_girls, urinals_boys, urinals_girls,
+      has_drinking_water_facility, has_electricity, has_library, has_playground, 
+      has_medical_checkup, has_integrated_lab, has_internet, has_dth_access,
+      
+      boundary_wall_type, has_handrails, has_handwash_meal, has_handwash_common,
+      has_hm_room, has_rain_harvesting, has_ramps, has_solar_panel,
+      students_with_furniture, functional_desktops, total_digital_boards,
+
+      -- 6. Teachers & Staff
+      total_teachers, total_male_teachers, total_female_teachers,
+      total_regular_teachers, total_contract_teachers, total_part_time_teachers,
+      teachers_non_teaching_assignments, teachers_in_service_training, total_nr_teachers,
+      
+      -- 7. Teacher Qualifications
+      teachers_below_graduate, teachers_graduate_above, teachers_post_graduate_above,
+      teacher_qual_diploma_basic, teacher_qual_bele, teacher_qual_bed, teacher_qual_med,
+      teacher_qual_others, teacher_qual_none, teacher_qual_special_ed, teacher_qual_pursuing,
+      teacher_qual_deled, teacher_qual_diploma_preschool, teacher_qual_bed_nursery,
+
+      -- 8. Students & Classes
+      lowest_class, highest_class,
+      total_boy_students, total_girl_students, total_students,
+      
+      -- 9. Finance
+      total_expenditure, total_grant,
+
+      -- 10. JSON Social Data
+      social_data_general_sc_st_obc, social_data_religion,
+      social_data_cwsn, social_data_rte, social_data_ews
+
+    ) VALUES (
+      -- $1 - $11 (Identity)
+      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+      
+      -- $12 - $21 (Basic)
+      $12, $13, $14, $15, $16, $17, $18, $19, $20, $21,
+      
+      -- $22 - $29 (Instruction/Visits)
+      $22, $23, $24, $25, $26, $27, $28, $29,
+      
+      -- $30 - $37 (Flags)
+      $30, $31, $32, $33, $34, $35, $36, $37,
+      
+      -- $38 - $63 (Facilities)
+      $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, 
+      $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, 
+      $61, $62, $63,
+
+      -- $64 - $72 (Teachers Staff)
+      $64, $65, $66, $67, $68, $69, $70, $71, $72,
+      
+      -- $73 - $86 (Teacher Quals)
+      $73, $74, $75, $76, $77, $78, $79, $80, $81, $82, $83, $84, $85, $86,
+
+      -- $87 - $91 (Students)
+      $87, $88, $89, $90, $91,
+
+      -- $92 - $93 (Finance)
+      $92, $93,
+
+      -- $94 - $98 (Social JSON)
+      $94, $95, $96, $97, $98
+    )
+    ON CONFLICT (udise_code, year_desc) DO UPDATE SET
+      school_id = EXCLUDED.school_id,
+      school_name = EXCLUDED.school_name,
+      management_type = EXCLUDED.management_type,
+      category = EXCLUDED.category,
+      total_students = EXCLUDED.total_students,
+      total_teachers = EXCLUDED.total_teachers,
+      updated_at = NOW();
+  `;
+
   const values = [
+    // 1. Identity & Location ($1-$11)
     data.udiseCode,
     data.schoolId,
     r.schoolName,
-    data.yearDesc || r.yearDesc, // 1-4
-    p.headMasterName,
-    r.schStatusName,
-    r.schTypeDesc, // 5-7
-    p.mediumOfInstrName1,
-    p.mediumOfInstrName2, // 8-9
-    toBool(p.minorityYnDesc),
-    toBool(p.anganwadiYnDesc),
-    num(p.anganwadiStuB),
-    num(p.anganwadiStuG), // 10-13
-    toBool(p.cceYnDesc),
-    toBool(p.smcYnDesc),
-    toBool(p.approachRoadYnDesc),
-    toBool(p.shiftSchYnDesc), // 14-17
-    f.bldStatus,
-    num(f.clsrmsInst),
-    num(f.clsrmsGd),
-    num(f.toiletb),
-    num(f.toiletg), // 18-22
-    toBool(f.drinkWaterYnDesc),
-    toBool(f.electricityYnDesc),
-    toBool(f.libraryYnDesc), // 23-25
-    toBool(f.playgroundYnDesc),
-    toBool(f.medchkYnDesc),
-    toBool(f.integratedLabYnDesc),
-    toBool(f.internetYnDesc), // 26-29
-    totalTeachers,
-    num(r.totMale),
-    num(r.totFemale),
-    num(r.tchReg),
-    num(r.tchCont),
-    intOrNull(r.lowClass),
-    intOrNull(r.highClass), // 30-36
-    num(s.totalBoy),
-    num(s.totalGirl),
-    num(s.totalCount), // 37-39
-    JSON.stringify(soc.flag1 || []),
-    JSON.stringify(soc.flag2 || []),
-    JSON.stringify(soc.flag3 || []),
-    JSON.stringify(soc.flag5 || []),
-    JSON.stringify(soc.flag4 || []), // 40-44
+    data.yearDesc || r.yearDesc,
     r.stateName,
     r.districtName,
     r.blockName,
     r.villWardName,
     r.clusterName,
+    p.schPhone,
+    r.schLocDesc,
+
+    // 2. Basic Details ($12-$21)
+    p.headMasterName,
+    r.schStatusName,
+    r.schTypeDesc,
     r.schMgmtStateDesc,
+    r.schCategoryDesc, // category
+    intOrNull(p.estdYear),
+    p.ppSecDesc, // is_pre_primary_section (keeping as text if it's a desc)
+    p.resiSchDesc,
+    toBool(p.cwsnSchYnDesc),
+    toBool(p.shiftSchYnDesc),
+
+    // 3. Instructions & Visits ($22-$29)
+    p.mediumOfInstrName1,
+    p.mediumOfInstrName2,
+    p.mediumOfInstrName3,
+    p.mediumOfInstrName4,
+    intOrNull(p.instructionalDays),
+    num(p.noVisitBrc),
+    num(p.noVisitCrc),
+    num(p.noVisitDis),
+
+    // 4. Flags ($30-$37)
+    toBool(p.minorityYnDesc),
+    toBool(p.anganwadiYnDesc),
+    num(p.anganwadiStuB),
+    num(p.anganwadiStuG),
+    toBool(p.anganwadiTchTrained),
+    toBool(p.cceYnDesc),
+    toBool(p.smcYnDesc),
+    toBool(p.approachRoadYnDesc),
+
+    // 5. Facility ($38-$63)
+    f.bldStatus,
+    num(f.clsrmsInst),
+    num(f.clsrmsGd),
+    num(f.toiletb),
+    num(f.toiletg),
+    num(f.urinalsb),
+    num(f.urinalsg),
+    toBool(f.drinkWaterYnDesc),
+    toBool(f.electricityYnDesc),
+    toBool(f.libraryYnDesc),
+    toBool(f.playgroundYnDesc),
+    toBool(f.medchkYnDesc),
+    toBool(f.integratedLabYnDesc),
+    toBool(f.internetYnDesc),
+    toBool(f.accessDthYnDesc),
+    f.bndrywallType,
+    toBool(f.handrailsYnDesc),
+    toBool(f.handwashMealYnDesc),
+    toBool(f.handwashYnDesc),
+    toBool(f.hmRoomYnDesc),
+    toBool(f.rainHarvestYnDesc),
+    toBool(f.rampsYnDesc),
+    toBool(f.solarpanelYnDesc),
+    num(f.stusHvFurnt),
+    num(f.desktopFun),
+    num(f.digiBoardTot),
+
+    // 6. Teachers & Staff ($64-$72)
+    totalTeachers,
+    num(r.totMale),
+    num(r.totFemale),
+    num(r.tchReg),
+    num(r.tchCont),
+    num(r.tchPart),
+    num(r.tchInvlovedNonTchAssign),
+    num(r.tchRecvdServiceTrng),
+    num(r.totNr),
+
+    // 7. Teacher Qualifications ($73-$86)
+    num(r.totTchBelowGraduate),
+    num(r.totTchGraduateAbove),
+    num(r.totTchPgraduateAbove),
+    num(r.profQual1), // Diploma/Cert Basic
+    num(r.profQual2), // B.El.Ed
+    num(r.profQual3), // B.Ed
+    num(r.profQual4), // M.Ed
+    num(r.profQual5), // Others
+    num(r.profQual6), // None
+    num(r.profQual7), // Special Ed
+    num(r.profQual8), // Pursuing
+    num(r.profQual10), // D.El.Ed
+    num(r.profQual11), // Diploma Preschool
+    num(r.profQual12), // B.Ed Nursery
+
+    // 8. Students & Classes ($87-$91)
+    intOrNull(r.lowClass),
+    intOrNull(r.highClass),
+    num(s.totalBoy),
+    num(s.totalGirl),
+    num(s.totalCount),
+
+    // 9. Finance ($92-$93)
+    decOrNull(r.totalExpediture),
+    decOrNull(r.totalGrant),
+
+    // 10. Social JSON ($94-$98)
+    JSON.stringify(soc.flag1 || []),
+    JSON.stringify(soc.flag2 || []),
+    JSON.stringify(soc.flag3 || []),
+    JSON.stringify(soc.flag5 || []),
+    JSON.stringify(soc.flag4 || []),
   ];
 
   await pool.query(query, values);

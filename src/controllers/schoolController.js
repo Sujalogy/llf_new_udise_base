@@ -505,46 +505,97 @@ exports.getLocalSchoolDetails = async (req, res) => {
       (typeof val === "string" ? JSON.parse(val) : val) || [];
     const socialGen = parse(school.social_data_general_sc_st_obc);
     const socialCwsn = parse(school.social_data_cwsn); // Flag 2
-    const socialEws = parse(school.social_data_ews); // Flag 4
+    const socialEws = parse(school.social_data_ews);   // Flag 4
 
     // Construct the response object to match Frontend Interfaces
     const response = {
       profile: {
         udise_code: school.udise_code,
         school_name: school.school_name,
+        // [NEW] Contact & Location
+        school_phone: school.school_phone, 
+        location_type: school.location_type,
+        
         state_name: school.state_name,
         district_name: school.district_name,
         block_name: school.block_name,
         cluster: school.cluster_name,
         village: school.village_ward_name,
-        pincode: "", // Add to DB if available, else empty
-        category_name: school.school_type, // Mapping school_type to category for display
-        management_type: "Department of Education", // Default or map if available
-        establishment_year: 0, // Map if available
+        pincode: school.pincode || "", 
+        
+        // [NEW] Use the new 'category' column if available, else fallback
+        category_name: school.category || school.school_type, 
+        management_type: school.management_type || "Department of Education",
+        
+        // [NEW] Basic Info
+        establishment_year: school.establishment_year || 0,
         head_master: school.head_master_name,
         school_status: school.school_status,
         year_desc: school.year_desc,
+        
+        // [NEW] Extra Profile Flags
+        is_pre_primary_section: school.is_pre_primary_section,
+        residential_school_type: school.residential_school_type,
+        is_cwsn_school: school.is_cwsn_school,
+        shift_school: school.is_shift_school,
+        
+        // [NEW] Mediums & Instruction
+        medium_of_instruction_1: school.medium_of_instruction_1,
+        medium_of_instruction_2: school.medium_of_instruction_2,
+        medium_of_instruction_3: school.medium_of_instruction_3,
+        medium_of_instruction_4: school.medium_of_instruction_4,
+        instructional_days: school.instructional_days,
+        
+        // [NEW] Visits
+        visits_by_brc: school.visits_by_brc,
+        visits_by_crc: school.visits_by_crc,
+        visits_by_district_officer: school.visits_by_district_officer,
       },
       facility: {
+        // Basic
+        building_status: school.building_status,
+        classroom_count: school.total_classrooms_in_use,
+        good_condition_classrooms: school.good_condition_classrooms,
+        boundary_wall: school.boundary_wall_type || "Unknown",
+        furniture: "Unknown", // Field not in DB, keep placeholder or remove
+        
+        // Sanitation
         toilet_boys: school.total_toilets_boys,
         toilet_girls: school.total_toilets_girls,
+        urinals_boys: school.urinals_boys, // [NEW]
+        urinals_girls: school.urinals_girls, // [NEW]
+        
+        // Amenities (Booleans)
         electricity: school.has_electricity,
         library: school.has_library,
         playground: school.has_playground,
         drinking_water: school.has_drinking_water_facility,
-        ramp: false, // Map if available in DB
-        boundary_wall: "Unknown", // Map if available
-        building_status: school.building_status,
-        classroom_count: school.total_classrooms_in_use,
-        furniture: "Unknown",
+        ramp: school.has_ramps, // [UPDATED] Mapped from DB
+        
+        // [NEW] Amenities
+        has_handwash_meal: school.has_handwash_meal,
+        has_handwash_common: school.has_handwash_common,
+        has_handrails: school.has_handrails,
+        has_medical_checkup: school.has_medical_checkup,
+        has_hm_room: school.has_hm_room,
+        has_solar_panel: school.has_solar_panel,
+        has_rain_harvesting: school.has_rain_harvesting,
+        
+        // [NEW] Digital & Furniture
+        has_internet: school.has_internet,
+        has_dth_access: school.has_dth_access,
+        has_integrated_lab: school.has_integrated_lab,
+        functional_desktops: school.functional_desktops,
+        total_digital_boards: school.total_digital_boards,
+        students_with_furniture: school.students_with_furniture,
       },
       social: {
         general: getSocialSum(socialGen, "General"),
         caste_SC: getSocialSum(socialGen, "SC"),
         caste_ST: getSocialSum(socialGen, "ST"),
         OBC: getSocialSum(socialGen, "OBC"),
-        CWSN: getSocialSum(socialCwsn, "ALL"), // Sum all rows in Flag 2
-        EWS: getSocialSum(socialEws, "ALL"), // Sum all rows in Flag 4
+        CWSN: getSocialSum(socialCwsn, "ALL"),
+        EWS: getSocialSum(socialEws, "ALL"),
       },
       teachers: {
         total_teachers: school.total_teachers,
@@ -552,6 +603,29 @@ exports.getLocalSchoolDetails = async (req, res) => {
         teachers_female: school.total_female_teachers,
         regular: school.total_regular_teachers,
         contract: school.total_contract_teachers,
+        part_time: school.total_part_time_teachers, // [NEW]
+        
+        // [NEW] Engagement
+        non_teaching_assignments: school.teachers_non_teaching_assignments,
+        in_service_training: school.teachers_in_service_training,
+        
+        // [NEW] Academic Stats
+        below_graduate: school.teachers_below_graduate,
+        graduate_above: school.teachers_graduate_above,
+        post_graduate_above: school.teachers_post_graduate_above,
+        
+        // [NEW] Professional Quals
+        qual_diploma_basic: school.teacher_qual_diploma_basic,
+        qual_bele: school.teacher_qual_bele,
+        qual_bed: school.teacher_qual_bed,
+        qual_med: school.teacher_qual_med,
+        qual_others: school.teacher_qual_others,
+        qual_none: school.teacher_qual_none,
+        qual_special_ed: school.teacher_qual_special_ed,
+        qual_pursuing: school.teacher_qual_pursuing,
+        qual_deled: school.teacher_qual_deled,
+        qual_diploma_preschool: school.teacher_qual_diploma_preschool,
+        qual_bed_nursery: school.teacher_qual_bed_nursery,
       },
       stats: {
         students_total: school.total_students,
