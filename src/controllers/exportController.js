@@ -1,4 +1,5 @@
 const schoolModel = require("../models/schoolModel");
+const apiService = require("../services/apiService");
 
 // Mapping for Social Data Keys (from your columns.json)
 const SOCIAL_KEY_MAP = {
@@ -74,28 +75,39 @@ const jsonToCsv = (data) => {
 
 exports.downloadSchoolList = async (req, res) => {
   try {
-    const { stcode11, dtcode11, format } = req.query;
-    if (!stcode11 || !dtcode11) return res.status(400).json({ error: "State and District required" });
+    const { stcode11, dtcode11, yearId, category, management, format } = req.query;
 
-    // 1. Fetch Data
-    const rawData = await schoolModel.getExportData(stcode11, dtcode11);
+    // Resolve Year
+    let yearDesc = null;
+    if (yearId) {
+      const years = await apiService.fetchYears();
+      const match = years.find((y) => String(y.yearId) === String(yearId));
+      if (match) yearDesc = match.yearDesc;
+    }
+
+    const filters = { stcode11, dtcode11, yearDesc, category, management };
+
+    // 1. Fetch Data dynamically
+    const rawData = await schoolModel.getExportData(filters);
 
     if (!rawData.length) {
-      return res.status(404).json({ error: "No data found for export. Please sync details first." });
+      return res.status(404).json({ error: "No data found matching your filters." });
     }
 
     // 2. Flatten Data
     const flatData = rawData.map(flattenSocialData);
 
+    const filename = `schools_export_${yearDesc || 'all'}_${stcode11 || 'all'}`;
+
     // 3. Send Response
     if (format === "csv") {
       const csvData = jsonToCsv(flatData);
       res.setHeader("Content-Type", "text/csv");
-      res.setHeader("Content-Disposition", `attachment; filename=schools_full_${stcode11}_${dtcode11}.csv`);
+      res.setHeader("Content-Disposition", `attachment; filename=${filename}.csv`);
       return res.send(csvData);
     } else {
       res.setHeader("Content-Type", "application/json");
-      res.setHeader("Content-Disposition", `attachment; filename=schools_full_${stcode11}_${dtcode11}.json`);
+      res.setHeader("Content-Disposition", `attachment; filename=${filename}.json`);
       return res.send(JSON.stringify(flatData, null, 2));
     }
   } catch (err) {

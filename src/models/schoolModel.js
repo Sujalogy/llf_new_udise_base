@@ -1,9 +1,5 @@
 const pool = require("../config/db");
 
-// -------------------------------------------------------------------------
-// 1. GIS SYNC (Step 1 or 1.5)
-// -------------------------------------------------------------------------
-
 exports.getObjectIds = async (stcode11, dtcode11) => {
   const result = await pool.query(
     "SELECT object_id FROM udise_data.master_object WHERE stcode11=$1 AND dtcode11=$2",
@@ -154,32 +150,11 @@ exports.upsertSchoolDetails = async (data) => {
   await pool.query(query, values);
 };
 
-// -------------------------------------------------------------------------
-// 2. LISTING & EXPORT
-// -------------------------------------------------------------------------
-
-exports.getLocalSchoolList = async (stcode11, dtcode11, page, limit, category, management) => {
+exports.getLocalSchoolList = async (filters, page, limit) => {
+  const { whereSql, params, paramIdx } = buildWhereClause(filters);
   const offset = (page - 1) * limit;
-  
-  // Base conditions
-  let whereClause = `WHERE l.stcode11 = $1 AND l.dtcode11 = $2`;
-  const params = [stcode11, dtcode11];
-  let paramIdx = 3;
 
-  // Dynamic Filters
-  if (category && category !== 'all') {
-    whereClause += ` AND d.school_type = $${paramIdx}`;
-    params.push(category);
-    paramIdx++;
-  }
-
-  if (management && management !== 'all') {
-    whereClause += ` AND d.management_type = $${paramIdx}`;
-    params.push(management);
-    paramIdx++;
-  }
-
-  // 1. Data Query (Uses LIMIT & OFFSET)
+  // [UPDATED] Select 'category' in the query
   const dataQuery = `
     SELECT 
       l.schcd as udise_code,
@@ -187,48 +162,45 @@ exports.getLocalSchoolList = async (stcode11, dtcode11, page, limit, category, m
       l.stname as state_name,
       l.dtname as district_name,
       d.block_name,
-      l.pincode,
       d.school_id,
       d.school_status,
-      d.school_type as category,
-      d.management_type as management
+      d.school_type,      -- Existing School Type
+      d.category,         -- [NEW] Category
+      d.management_type as management,
+      d.year_desc
     FROM udise_data.school_udise_list l
-    LEFT JOIN udise_data.school_udise_data d ON l.schcd = d.udise_code
-    ${whereClause}
+    JOIN udise_data.school_udise_data d ON l.schcd = d.udise_code
+    ${whereSql}
     ORDER BY d.school_name ASC
     LIMIT $${paramIdx} OFFSET $${paramIdx + 1}
   `;
 
-  // 2. Count Query (Does NOT use LIMIT & OFFSET)
   const countQuery = `
     SELECT COUNT(*) as total
     FROM udise_data.school_udise_list l
-    LEFT JOIN udise_data.school_udise_data d ON l.schcd = d.udise_code
-    ${whereClause}
+    JOIN udise_data.school_udise_data d ON l.schcd = d.udise_code
+    ${whereSql}
   `;
 
-  // [FIX] Create a separate params array for count query
-  // The 'params' array currently has filter values. We add limit/offset ONLY for dataQuery.
-  const dataParams = [...params, limit, offset]; 
-  const countParams = [...params]; // Copy without limit/offset
-
   const [dataResult, countResult] = await Promise.all([
-    pool.query(dataQuery, dataParams),
-    pool.query(countQuery, countParams)
+    pool.query(dataQuery, [...params, limit, offset]),
+    pool.query(countQuery, params)
   ]);
 
   return {
     data: dataResult.rows,
     meta: {
-      page: page,
-      limit: limit,
+      page,
+      limit,
       count: dataResult.rows.length,
-      total: parseInt(countResult.rows[0].total),
+      total: parseInt(countResult.rows[0]?.total || 0),
     },
   };
 };
 
-exports.getExportData = async (stcode11, dtcode11) => {
+exports.getExportData = async (filters) => {
+  const { whereSql, params } = buildWhereClause(filters);
+
   const query = `
     SELECT 
       l.schcd as udise_code,
@@ -239,17 +211,17 @@ exports.getExportData = async (stcode11, dtcode11) => {
       d.cluster_name,
       d.village_ward_name,
       l.pincode,
+      d.year_desc,
+      d.management_type,
+      d.school_type,
       d.* FROM udise_data.school_udise_data d
     JOIN udise_data.school_udise_list l ON d.udise_code = l.schcd
-    WHERE l.stcode11 = $1 AND l.dtcode11 = $2
+    ${whereSql}
+    ORDER BY l.stname, l.dtname, d.school_name
   `;
-  const result = await pool.query(query, [stcode11, dtcode11]);
+  const result = await pool.query(query, params);
   return result.rows;
 };
-
-// -------------------------------------------------------------------------
-// 3. DETAIL SYNC (Step 2 - Level 2)
-// -------------------------------------------------------------------------
 
 exports.getSchoolsForDetailSync = async (stcode11, dtcode11) => {
   const result = await pool.query(
@@ -444,6 +416,58 @@ exports.upsertDirectorySchool = async (data) => {
   );
 };
 
+const buildWhereClause = (filters) => {
+  const conditions = [];
+  const params = [];
+  let paramIdx = 1;
+
+  // 1. Year Filter
+  if (filters.yearDesc) {
+    conditions.push(`d.year_desc = $${paramIdx++}`);
+    params.push(filters.yearDesc);
+  }
+
+  // 2. State Filter
+  if (filters.stcode11) {
+    conditions.push(`l.stcode11 = $${paramIdx++}`);
+    params.push(filters.stcode11);
+  }
+
+  // 3. District Filter
+  if (filters.dtcode11) {
+    conditions.push(`l.dtcode11 = $${paramIdx++}`);
+    params.push(filters.dtcode11);
+  }
+
+  // 4. School Type Filter (Renamed from 'category' to avoid confusion)
+  if (filters.schoolType && filters.schoolType !== 'all') {
+    conditions.push(`d.school_type = $${paramIdx++}`);
+    params.push(filters.schoolType);
+  }
+
+  // 5. [NEW] Category Filter (The new DB column)
+  if (filters.category && filters.category !== 'all') {
+    conditions.push(`d.category = $${paramIdx++}`);
+    params.push(filters.category);
+  }
+
+  // 6. Management Filter
+  if (filters.management && filters.management !== 'all') {
+    conditions.push(`d.management_type = $${paramIdx++}`);
+    params.push(filters.management);
+  }
+
+  // 7. Search Query
+  if (filters.search) {
+    conditions.push(`(d.school_name ILIKE $${paramIdx} OR l.schcd ILIKE $${paramIdx})`);
+    params.push(`%${filters.search}%`);
+    paramIdx++;
+  }
+
+  const whereSql = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  return { whereSql, params, paramIdx };
+};
+
 exports.getDashboardStats = async () => {
   // 1. Sync Status Counts
   const syncStatusQuery = `
@@ -523,7 +547,6 @@ exports.logSkippedSchool = async (udiseCode, stcode11, dtcode11, yearDesc, reaso
   await pool.query(query, [udiseCode, stcode11, dtcode11, yearDesc, reason]);
 };
 
-// [NEW] Get list of skipped schools
 exports.getSkippedSchools = async (page = 1, limit = 50) => {
   const offset = (page - 1) * limit;
   
@@ -552,7 +575,6 @@ exports.getSkippedSchools = async (page = 1, limit = 50) => {
   };
 };
 
-// [NEW] Remove from skipped table (after successful sync)
 exports.removeSkippedSchool = async (udiseCode) => {
   await pool.query("DELETE FROM udise_data.skipped_udise WHERE udise_code = $1", [udiseCode]);
 };

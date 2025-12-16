@@ -14,12 +14,36 @@ exports.getDistricts = async (req, res) => {
 
 // Synced Lists
 exports.getSyncedStates = async (req, res) => {
-  try { const data = await locationModel.getSyncedStates(); res.json(data); } 
+  try { 
+    // [NEW] Accept yearId to filter states that have data for that year
+    const { yearId } = req.query;
+    let yearDesc = null;
+    if (yearId) {
+        const years = await apiService.fetchYears();
+        const match = years.find((y) => String(y.yearId) === String(yearId));
+        if (match) yearDesc = match.yearDesc;
+    }
+
+    const data = await locationModel.getSyncedStates(yearDesc); 
+    res.json(data); 
+  } 
   catch (e) { res.status(500).json({ error: e.message }); }
 };
 
 exports.getSyncedDistricts = async (req, res) => {
-  try { const data = await locationModel.getSyncedDistricts(req.params.stcode11); res.json(data); } 
+  try { 
+    // [NEW] Accept yearId
+    const { yearId } = req.query;
+    let yearDesc = null;
+    if (yearId) {
+        const years = await apiService.fetchYears();
+        const match = years.find((y) => String(y.yearId) === String(yearId));
+        if (match) yearDesc = match.yearDesc;
+    }
+
+    const data = await locationModel.getSyncedDistricts(req.params.stcode11, yearDesc); 
+    res.json(data); 
+  } 
   catch (e) { res.status(500).json({ error: e.message }); }
 };
 

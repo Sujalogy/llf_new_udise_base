@@ -1,7 +1,7 @@
+const pool = require("../config/db");
 const schoolModel = require("../models/schoolModel");
 const apiService = require("../services/apiService");
 
-// 1. Step 1: Sync Directory (Using GIS Logic)
 exports.syncDirectory = async (req, res) => {
   try {
     const { stcode11, dtcode11 } = req.body;
@@ -54,57 +54,68 @@ exports.syncDirectory = async (req, res) => {
   }
 };
 
-// 2. Step 2: Sync Full Details (Using UDISE+ Logic)
 exports.syncSchoolDetails = async (req, res) => {
   try {
-    const { stcode11, dtcode11, yearId, udiseList, batchSize, strictMode } = req.body; // [NEW] Read config
-    
-    const validYearId = (yearId && parseInt(yearId) > 0) ? yearId : 11;
-    
+    const { stcode11, dtcode11, yearId, udiseList, batchSize, strictMode } =
+      req.body; // [NEW] Read config
+
+    const validYearId = yearId && parseInt(yearId) > 0 ? yearId : 11;
+
     // [CONFIG] Set defaults if not provided
-    const CHUNK_SIZE = (batchSize && parseInt(batchSize) > 0) ? parseInt(batchSize) : 5; 
+    const CHUNK_SIZE =
+      batchSize && parseInt(batchSize) > 0 ? parseInt(batchSize) : 5;
     const IS_STRICT = strictMode === true; // Default false if undefined
 
     // A. Fetch Years Metadata
     const yearsMeta = await apiService.fetchYears();
-    const selectedYearMeta = yearsMeta.find(y => String(y.yearId) === String(validYearId));
-    const yearDesc = selectedYearMeta ? selectedYearMeta.yearDesc : `${validYearId}`;
+    const selectedYearMeta = yearsMeta.find(
+      (y) => String(y.yearId) === String(validYearId)
+    );
+    const yearDesc = selectedYearMeta
+      ? selectedYearMeta.yearDesc
+      : `${validYearId}`;
 
     // B. Determine List
     let schools = [];
     if (udiseList && Array.isArray(udiseList) && udiseList.length > 0) {
-      schools = udiseList.map(code => ({ udise_code: code }));
+      schools = udiseList.map((code) => ({ udise_code: code }));
     } else {
       schools = await schoolModel.getSchoolsForDetailSync(stcode11, dtcode11);
     }
-    
+
     if (!schools.length) {
       return res.json({ success: false, message: "No schools found to sync." });
     }
 
-
     let processed = 0;
     let skipped = 0;
     let failed = 0;
-    
+
     // [UPDATED LOOP] Use dynamic CHUNK_SIZE
     for (let i = 0; i < schools.length; i += CHUNK_SIZE) {
       const chunk = schools.slice(i, i + CHUNK_SIZE);
-      
+
       const promises = chunk.map(async (school) => {
         try {
           // [CHECK 1]: Already Exists?
-          const existingRecord = await schoolModel.checkSchoolDataExists(school.udise_code, yearDesc);
-          
+          const existingRecord = await schoolModel.checkSchoolDataExists(
+            school.udise_code,
+            yearDesc
+          );
+
           if (existingRecord) {
-            // If Strict Mode is ON, we might want to re-check validity even if it exists. 
+            // If Strict Mode is ON, we might want to re-check validity even if it exists.
             // But for now, let's keep the standard "if name exists, skip" logic to save time.
             if (existingRecord.school_name) {
               skipped++;
-              return; 
+              return;
             } else {
               await schoolModel.logSkippedSchool(
-                school.udise_code, stcode11, dtcode11, yearDesc, "Already Exists (Incomplete Data)"
+                school.udise_code,
+                stcode11,
+                dtcode11,
+                yearDesc,
+                "Already Exists (Incomplete Data)"
               );
               skipped++;
               return;
@@ -112,37 +123,53 @@ exports.syncSchoolDetails = async (req, res) => {
           }
 
           // [ACTION]: Fetch
-          const fullData = await apiService.fetchFullSchoolData(school.udise_code, validYearId);
-          
+          const fullData = await apiService.fetchFullSchoolData(
+            school.udise_code,
+            validYearId
+          );
+
           // [CHECK 2]: Data Validation
-          const hasBasicData = fullData && fullData.report && fullData.report.schoolName;
-          
+          const hasBasicData =
+            fullData && fullData.report && fullData.report.schoolName;
+
           // Logic:
           // If Strict Mode = TRUE: We REQUIRE schoolName. If missing -> Fail/Skip.
           // If Strict Mode = FALSE: We allow partial data (though DB constraints might still fail later).
-          
-          const isValid = IS_STRICT ? hasBasicData : (fullData !== null); 
+
+          const isValid = IS_STRICT ? hasBasicData : fullData !== null;
 
           if (isValid) {
-            fullData.yearDesc = yearDesc; 
+            fullData.yearDesc = yearDesc;
             await schoolModel.upsertSchoolDetails(fullData);
             await schoolModel.removeSkippedSchool(school.udise_code);
             processed++;
           } else {
-            const reason = IS_STRICT ? "Validation Failed (Strict Mode)" : "API Returned Empty";
+            const reason = IS_STRICT
+              ? "Validation Failed (Strict Mode)"
+              : "API Returned Empty";
             await schoolModel.logSkippedSchool(
-              school.udise_code, stcode11, dtcode11, yearDesc, reason
+              school.udise_code,
+              stcode11,
+              dtcode11,
+              yearDesc,
+              reason
             );
             failed++;
           }
-
         } catch (innerErr) {
-          if (innerErr.code === '23505') {
-            skipped++; 
+          if (innerErr.code === "23505") {
+            skipped++;
           } else {
-            console.error(`❌ Error processing ${school.udise_code}:`, innerErr.message);
+            console.error(
+              `❌ Error processing ${school.udise_code}:`,
+              innerErr.message
+            );
             await schoolModel.logSkippedSchool(
-              school.udise_code, stcode11, dtcode11, yearDesc, `Error: ${innerErr.message}`
+              school.udise_code,
+              stcode11,
+              dtcode11,
+              yearDesc,
+              `Error: ${innerErr.message}`
             );
             failed++;
           }
@@ -152,21 +179,19 @@ exports.syncSchoolDetails = async (req, res) => {
       await Promise.all(promises);
     }
 
-    res.json({ 
-      success: true, 
-      count: processed, 
+    res.json({
+      success: true,
+      count: processed,
       skipped: skipped,
       failed: failed,
-      message: `Sync Complete: ${processed} updated, ${skipped} skipped, ${failed} failed.` 
+      message: `Sync Complete: ${processed} updated, ${skipped} skipped, ${failed} failed.`,
     });
-
   } catch (err) {
     console.error("Critical Sync Error:", err);
     res.status(500).json({ success: false, error: err.message });
   }
 };
 
-// [NEW] Get Skipped List Controller
 exports.getSkippedList = async (req, res) => {
   try {
     const { page = 1, limit = 50 } = req.query;
@@ -180,7 +205,6 @@ exports.getSkippedList = async (req, res) => {
   }
 };
 
-// ... keep existing getMySchools & proxies
 exports.getMySchools = async (req, res) => {
   try {
     const {
@@ -188,12 +212,14 @@ exports.getMySchools = async (req, res) => {
       dtcode11,
       page = 1,
       limit = 50,
-      category,
+      schoolType, // [RENAMED] was category
+      category, // [NEW] the actual category column
       management,
       yearId,
+      search,
     } = req.query;
 
-    // [NEW] Resolve Year ID -> Description (e.g., 11 -> "2023-24")
+    // Resolve Year ID -> Description
     let yearDesc = null;
     if (yearId) {
       const years = await apiService.fetchYears();
@@ -201,17 +227,23 @@ exports.getMySchools = async (req, res) => {
       if (match) yearDesc = match.yearDesc;
     }
 
-    const schools = await schoolModel.getLocalSchoolList(
+   const filters = {
       stcode11,
       dtcode11,
-      parseInt(page),
-      parseInt(limit),
+      schoolType, 
       category,
       management,
-      yearDesc // [NEW] Pass the string
+      yearDesc,
+      search
+    };
+
+    const result = await schoolModel.getLocalSchoolList(
+      filters,
+      parseInt(page),
+      parseInt(limit)
     );
 
-    res.json(schools);
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -219,10 +251,26 @@ exports.getMySchools = async (req, res) => {
 
 exports.getFilters = async (req, res) => {
   try {
-    const filters = await schoolModel.getDistinctFilters();
-    res.json(filters);
+    // You might need to add a method in schoolModel to fetching distinct values
+    // For now, assuming you have a way or simple query:
+    const schoolTypesQuery = `SELECT DISTINCT school_type FROM udise_data.school_udise_data WHERE school_type IS NOT NULL ORDER BY school_type`;
+    const categoriesQuery = `SELECT DISTINCT category FROM udise_data.school_udise_data WHERE category IS NOT NULL ORDER BY category`;
+    const managementsQuery = `SELECT DISTINCT management_type FROM udise_data.school_udise_data WHERE management_type IS NOT NULL ORDER BY management_type`;
+
+    const [typesRes, catsRes, mgmtRes] = await Promise.all([
+      pool.query(schoolTypesQuery),
+      pool.query(categoriesQuery),
+      pool.query(managementsQuery)
+    ]);
+
+    res.json({
+      schoolTypes: typesRes.rows.map(r => r.school_type),
+      categories: catsRes.rows.map(r => r.category), // [NEW]
+      managements: mgmtRes.rows.map(r => r.management_type)
+    });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error(err);
+    res.status(500).json({ error: "Failed to fetch filters" });
   }
 };
 
@@ -248,14 +296,14 @@ exports.syncData = async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 };
-// ... other proxies
+
 exports.searchSchool = async (req, res) => {
   const data = await apiService.fetchUdisePlusData("search-schools", {
     ...req.query,
   });
   res.json(data);
 };
-// (Keep all other proxy exports from previous steps)
+
 exports.getProfile = async (req, res) => {
   const { schoolId } = req.params;
   const data = await apiService.fetchUdisePlusData("school/profile", {
@@ -264,6 +312,7 @@ exports.getProfile = async (req, res) => {
   });
   res.json(data);
 };
+
 exports.getFacilities = async (req, res) => {
   const { schoolId } = req.params;
   const data = await apiService.fetchUdisePlusData("school/facility", {
@@ -380,6 +429,7 @@ exports.getSocialData = async (req, res) => {
     res.json({ caste_SC: 0, caste_ST: 0, OBC: 0, EWS: 0, general: 0, CWSN: 0 });
   }
 };
+
 exports.getStats = async (req, res) => {
   const { schoolId } = req.params;
   const data = await apiService.fetchUdisePlusData(

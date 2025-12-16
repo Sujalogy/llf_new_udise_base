@@ -1,7 +1,5 @@
 const pool = require("../config/db");
 
-// --- A. MASTER LIST (For Admin Sync Page) ---
-// Returns ALL states/districts available in the master tables
 exports.getAllStates = async () => {
   const result = await pool.query(
     "SELECT DISTINCT stname, stcode11 FROM udise_data.state ORDER BY stname"
@@ -10,7 +8,6 @@ exports.getAllStates = async () => {
 };
 
 exports.getDistrictsByState = async (stcode11) => {
-  // [EXISTING]: Counts schools from master_object
   const query = `
     SELECT d.dtname, d.dtcode11, COUNT(m.object_id)::int as school_count
     FROM udise_data.district d
@@ -23,28 +20,42 @@ exports.getDistrictsByState = async (stcode11) => {
   const result = await pool.query(query, [stcode11]);
   return result.rows;
 };
-// --- B. SYNCED LIST (For Explorer Page) ---
-// Returns ONLY states/districts that have data in your `udise_data.school_udise_list` table
-exports.getSyncedStates = async () => {
-  const result = await pool.query(`
+
+exports.getSyncedStates = async (yearDesc) => {
+  let query = `
     SELECT DISTINCT l.stname, l.stcode11 
     FROM udise_data.school_udise_list l
     JOIN udise_data.school_udise_data d ON l.schcd = d.udise_code
-    ORDER BY l.stname
-  `);
+  `;
+  const params = [];
+
+  if (yearDesc) {
+    query += ` WHERE d.year_desc = $1`;
+    params.push(yearDesc);
+  }
+
+  query += ` ORDER BY l.stname`;
+
+  const result = await pool.query(query, params);
   return result.rows;
 };
 
-exports.getSyncedDistricts = async (stcode11) => {
-  const result = await pool.query(
-    `
+exports.getSyncedDistricts = async (stcode11, yearDesc) => {
+  let query = `
     SELECT DISTINCT l.dtname, l.dtcode11 
     FROM udise_data.school_udise_list l
     JOIN udise_data.school_udise_data d ON l.schcd = d.udise_code
-    WHERE l.stcode11 = $1 
-    ORDER BY l.dtname
-  `,
-    [stcode11]
-  );
+    WHERE l.stcode11 = $1
+  `;
+  const params = [stcode11];
+  
+  if (yearDesc) {
+    query += ` AND d.year_desc = $2`;
+    params.push(yearDesc);
+  }
+  
+  query += ` ORDER BY l.dtname`;
+
+  const result = await pool.query(query, params);
   return result.rows;
 };
