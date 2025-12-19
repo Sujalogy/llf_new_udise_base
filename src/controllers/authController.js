@@ -1,3 +1,4 @@
+// src/controllers/authController.js
 const { OAuth2Client } = require("google-auth-library");
 const jwt = require("jsonwebtoken");
 const pool = require("../config/db");
@@ -16,7 +17,7 @@ exports.googleLogin = async (req, res) => {
     const { email, name, picture, sub: googleId } = ticket.getPayload();
     const today = new Date().toISOString().split('T')[0];
 
-    // Check attempts & Upsert User
+    // Upsert User with status 'pending' if new
     const upsertQuery = `
       INSERT INTO udise_data.users (email, google_id, name, profile_picture, last_login, status, last_attempt_date, login_attempts)
       VALUES ($1, $2, $3, $4, NOW(), 'pending', $5, 1)
@@ -36,7 +37,6 @@ exports.googleLogin = async (req, res) => {
       });
     }
 
-    // Generate Hackproof Session
     const sessionId = crypto.randomBytes(32).toString('hex');
     const token = jwt.sign(
       { userId: user.user_id, sessionId, role: user.role }, 
@@ -44,7 +44,6 @@ exports.googleLogin = async (req, res) => {
       { expiresIn: '24h' }
     );
 
-    // Save sessionId to DB to lock the session
     await pool.query(
       "UPDATE udise_data.users SET current_session_id = $1 WHERE user_id = $2", 
       [sessionId, user.user_id]
@@ -59,13 +58,11 @@ exports.googleLogin = async (req, res) => {
 
     res.json({ success: true, user: { id: user.user_id, email: user.email, name: user.name, role: user.role, picture } });
   } catch (error) {
-    console.error(error);
     res.status(401).json({ error: "Authentication failed" });
   }
 };
 
 exports.getMe = async (req, res) => {
-  // This is called by the frontend on mount. req.user comes from authenticate middleware.
   const result = await pool.query(
     "SELECT user_id as id, email, name, role, profile_picture as picture FROM udise_data.users WHERE user_id = $1", 
     [req.user.userId]

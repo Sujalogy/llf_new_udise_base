@@ -1,24 +1,22 @@
+// src/middleware/authMiddleware.js
 const jwt = require("jsonwebtoken");
 const pool = require("../config/db");
 
 exports.authenticate = async (req, res, next) => {
   const token = req.cookies.auth_token;
-  if (!token) return res.status(401).json({ error: "No session found" }); // Generic message
+  if (!token) return res.status(401).json({ error: "No session found" });
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     const userRes = await pool.query(
-      "SELECT current_session_id, status FROM udise_data.users WHERE user_id = $1",
+      "SELECT current_session_id FROM udise_data.users WHERE user_id = $1",
       [decoded.userId]
     );
 
     const user = userRes.rows[0];
     if (!user || user.current_session_id !== decoded.sessionId) {
-      // Clear the cookie because it's invalid
       res.clearCookie("auth_token");
-      return res
-        .status(401)
-        .json({ error: "Session expired or logged in elsewhere." });
+      return res.status(401).json({ error: "Session expired." });
     }
 
     req.user = decoded;
