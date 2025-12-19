@@ -1,100 +1,80 @@
-const { v4: uuidv4 } = require("uuid");
-const pool = require("../config/db");
 const { OAuth2Client } = require("google-auth-library");
+const jwt = require("jsonwebtoken");
+const pool = require("../config/db");
+const crypto = require("crypto");
 
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 exports.googleLogin = async (req, res) => {
   try {
     const { credential } = req.body;
-
-    if (!credential) {
-      return res.status(400).json({ error: "Missing Google credential" });
-    }
-
-    /* ================= VERIFY GOOGLE TOKEN ================= */
-
     const ticket = await googleClient.verifyIdToken({
       idToken: credential,
       audience: process.env.GOOGLE_CLIENT_ID,
     });
 
-    const payload = ticket.getPayload();
-    const { email, name, picture, sub: googleId, hd } = payload;
+    const { email, name, picture, sub: googleId } = ticket.getPayload();
+    const today = new Date().toISOString().split('T')[0];
 
-    /* ================= DOMAIN RESTRICTION ================= */
+    // Check attempts & Upsert User
+    const upsertQuery = `
+      INSERT INTO udise_data.users (email, google_id, name, profile_picture, last_login, status, last_attempt_date, login_attempts)
+      VALUES ($1, $2, $3, $4, NOW(), 'pending', $5, 1)
+      ON CONFLICT (email) DO UPDATE SET 
+        last_login = NOW(),
+        login_attempts = CASE WHEN users.last_attempt_date = $5 THEN users.login_attempts + 1 ELSE 1 END,
+        last_attempt_date = $5
+      RETURNING *;
+    `;
+    const result = await pool.query(upsertQuery, [email, googleId, name, picture, today]);
+    const user = result.rows[0];
 
-    const ALLOWED_DOMAIN = process.env.ALLOWED_DOMAIN;
-    if (ALLOWED_DOMAIN && hd !== ALLOWED_DOMAIN) {
-      return res.status(403).json({ error: "Domain not allowed" });
+    if (user.status === 'pending') {
+      return res.status(403).json({ 
+        error: "Waiting List", 
+        message: "You are on the waiting list. Please contact Sujal for activation." 
+      });
     }
 
-    /* ================= UPSERT USER ================= */
-
-    const userQuery = `
-      INSERT INTO udise_data.users
-        (email, google_id, name, profile_picture, last_login, status)
-      VALUES ($1, $2, $3, $4, NOW(), 'active')
-      ON CONFLICT (email)
-      DO UPDATE SET
-        name = EXCLUDED.name,
-        profile_picture = EXCLUDED.profile_picture,
-        google_id = EXCLUDED.google_id,
-        last_login = NOW()
-      RETURNING user_id, email, name, role;
-    `;
-
-    const userResult = await pool.query(userQuery, [
-      email,
-      googleId,
-      name,
-      picture,
-    ]);
-
-    const user = userResult.rows[0];
-
-    /* ================= SESSION TOKEN ================= */
-
-    const token = uuidv4();
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
-
-    // Optional: invalidate old tokens
-    await pool.query(
-      `DELETE FROM udise_data.auth_tokens WHERE user_id = $1`,
-      [user.user_id]
+    // Generate Hackproof Session
+    const sessionId = crypto.randomBytes(32).toString('hex');
+    const token = jwt.sign(
+      { userId: user.user_id, sessionId, role: user.role }, 
+      process.env.JWT_SECRET, 
+      { expiresIn: '24h' }
     );
 
+    // Save sessionId to DB to lock the session
     await pool.query(
-      `
-      INSERT INTO udise_data.auth_tokens (user_id, token, expires_at)
-      VALUES ($1, $2, $3)
-    `,
-      [user.user_id, token, expiresAt]
+      "UPDATE udise_data.users SET current_session_id = $1 WHERE user_id = $2", 
+      [sessionId, user.user_id]
     );
-
-    /* ================= SET COOKIE (RECOMMENDED) ================= */
 
     res.cookie("auth_token", token, {
       httpOnly: true,
-      secure: true,
-      sameSite: "None",
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "Lax",
       maxAge: 24 * 60 * 60 * 1000,
     });
 
-    /* ================= RESPONSE ================= */
-
-    res.json({
-      success: true,
-      user: {
-        id: user.user_id,
-        email: user.email,
-        name: user.name,
-        role: user.role,
-        picture,
-      },
-    });
+    res.json({ success: true, user: { id: user.user_id, email: user.email, name: user.name, role: user.role, picture } });
   } catch (error) {
-    console.error("Google Login Error:", error);
+    console.error(error);
     res.status(401).json({ error: "Authentication failed" });
   }
+};
+
+exports.getMe = async (req, res) => {
+  // This is called by the frontend on mount. req.user comes from authenticate middleware.
+  const result = await pool.query(
+    "SELECT user_id as id, email, name, role, profile_picture as picture FROM udise_data.users WHERE user_id = $1", 
+    [req.user.userId]
+  );
+  res.json({ user: result.rows[0] });
+};
+
+exports.logout = async (req, res) => {
+  await pool.query("UPDATE udise_data.users SET current_session_id = NULL WHERE user_id = $1", [req.user.userId]);
+  res.clearCookie("auth_token");
+  res.json({ success: true });
 };

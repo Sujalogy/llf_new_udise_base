@@ -2,25 +2,28 @@ const express = require("express");
 const router = express.Router();
 const schoolController = require("../controllers/schoolController");
 const exportController = require("../controllers/exportController");
+const { authenticate, authorizeAdmin } = require("../middleware/authMiddleware");
 
-// --- 1. LOCAL DB ROUTES ---
-router.get("/filters", schoolController.getFilters); // [NEW]
+// --- 1. MIDDLEWARE: Protect all school routes ---
+router.use(authenticate);
+
+// --- 2. USER ROUTES (Everyone with an 'active' account) ---
+router.get("/filters", schoolController.getFilters);
 router.get("/list", schoolController.getMySchools);
-router.post("/sync", schoolController.syncData); // Level 1.5 (GIS Coords)
-router.post("/sync-directory", schoolController.syncDirectory); // Level 1 (Master List)
-router.post("/sync-details", schoolController.syncSchoolDetails); // Level 2 (Full Details - NEW)
-router.get("/export/list", exportController.downloadSchoolList);
 router.get("/local-details/:schoolId", schoolController.getLocalSchoolDetails);
-router.get("/skipped", schoolController.getSkippedList); // [NEW]
-router.get("/skipped/summary", schoolController.getSkippedSummary); // [NEW] Summary Grouped Stats
-router.get("/skipped/export", schoolController.exportSkippedList);  // [NEW] Download CSV/JSON
-router.post("/sync/details", schoolController.syncSchoolDetails);
-router.get("/stats/dashboard", schoolController.getDashboardStats);
-router.get("/stats/matrix", schoolController.getStateMatrix);
+router.get("/skipped", schoolController.getSkippedList);
+router.get("/skipped/summary", schoolController.getSkippedSummary);
+router.get("/skipped/export", schoolController.exportSkippedList);
+router.get("/export/list", exportController.downloadSchoolList);
 
-// --- 2. UDISE+ PROXY ROUTES ---
+// --- 3. admin ONLY ROUTES (Syncing & Dashboard Stats) ---
+router.post("/sync-directory", authorizeAdmin, schoolController.syncDirectory); 
+router.post("/sync/details", authorizeAdmin, schoolController.syncSchoolDetails);
+router.get("/stats/dashboard", authorizeAdmin, schoolController.getDashboardStats);
+router.get("/stats/matrix", authorizeAdmin, schoolController.getStateMatrix);
+
+// --- 4. UDISE+ PROXY ROUTES ---
 router.get("/search", schoolController.searchSchool);
 router.get("/profile/:schoolId", schoolController.getProfile);
-// ... other existing proxy routes
 
 module.exports = router;

@@ -4,7 +4,7 @@ const pool = require("./src/config/db");
 
 const PORT = process.env.PORT || 3000;
 
-// Test database connection
+// Test database connection before starting server
 pool.connect((err, client, release) => {
   if (err) {
     console.error("❌ Database connection failed:", err.message);
@@ -14,14 +14,23 @@ pool.connect((err, client, release) => {
     release();
     app.listen(PORT, () => {
       console.log(`✅ Server running on http://localhost:${PORT}`);
+      console.log(`✅ Environment: ${process.env.NODE_ENV || 'development'}`);
     });
   }
 });
 
-// Handle graceful shutdown
+// Handle graceful shutdown for clean pool termination
+process.on("SIGTERM", () => {
+  console.log("SIGTERM received. Closing pool...");
+  pool.end(() => {
+    console.log("Database pool closed.");
+    process.exit(0);
+  });
+});
+
 process.on("SIGINT", () => {
   pool.end(() => {
-    console.log("Pool closed");
+    console.log("SIGINT received. Pool closed.");
     process.exit(0);
   });
 });
