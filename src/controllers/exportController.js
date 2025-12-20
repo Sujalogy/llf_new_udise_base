@@ -1,5 +1,6 @@
 const schoolModel = require("../models/schoolModel");
 const apiService = require("../services/apiService");
+const pool = require("../config/db"); // [ADDED] Required for logging downloads
 
 // Mapping for Social Data Keys (from your columns.json)
 const SOCIAL_KEY_MAP = {
@@ -76,6 +77,7 @@ const jsonToCsv = (data) => {
 exports.downloadSchoolList = async (req, res) => {
   try {
     const { stcode11, dtcode11, yearId, category, management, format } = req.query;
+    const userId = req.user.userId; // [ADDED] Retrieved from authenticate middleware
 
     // Resolve Year
     let yearDesc = null;
@@ -94,12 +96,18 @@ exports.downloadSchoolList = async (req, res) => {
       return res.status(404).json({ error: "No data found matching your filters." });
     }
 
-    // 2. Flatten Data
+    // 2. Log the download for Monitoring
+    await pool.query(
+      "INSERT INTO udise_data.download_logs (user_id, format, filters) VALUES ($1, $2, $3)",
+      [userId, format, JSON.stringify(filters)]
+    );
+
+    // 3. Flatten Data
     const flatData = rawData.map(flattenSocialData);
 
     const filename = `schools_export_${yearDesc || 'all'}_${stcode11 || 'all'}`;
 
-    // 3. Send Response
+    // 4. Send Response
     if (format === "csv") {
       const csvData = jsonToCsv(flatData);
       res.setHeader("Content-Type", "text/csv");

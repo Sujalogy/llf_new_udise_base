@@ -15,7 +15,15 @@ exports.googleLogin = async (req, res) => {
     });
 
     const { email, name, picture, sub: googleId } = ticket.getPayload();
-    const today = new Date().toISOString().split('T')[0];
+
+    if (!email.endsWith("@languageandlearningfoundation.org")) {
+      return res.status(403).json({
+        error: "Unauthorized Domain",
+        message:
+          "Access is restricted to @languageandlearningfoundation.org emails.",
+      });
+    }
+    const today = new Date().toISOString().split("T")[0];
 
     // Upsert User with status 'pending' if new
     const upsertQuery = `
@@ -27,25 +35,32 @@ exports.googleLogin = async (req, res) => {
         last_attempt_date = $5
       RETURNING *;
     `;
-    const result = await pool.query(upsertQuery, [email, googleId, name, picture, today]);
+    const result = await pool.query(upsertQuery, [
+      email,
+      googleId,
+      name,
+      picture,
+      today,
+    ]);
     const user = result.rows[0];
 
-    if (user.status === 'pending') {
-      return res.status(403).json({ 
-        error: "Waiting List", 
-        message: "You are on the waiting list. Please contact Sujal for activation." 
+    if (user.status === "pending") {
+      return res.status(403).json({
+        error: "Waiting List",
+        message:
+          "You are on the waiting list. Please contact Sujal for activation.",
       });
     }
 
-    const sessionId = crypto.randomBytes(32).toString('hex');
+    const sessionId = crypto.randomBytes(32).toString("hex");
     const token = jwt.sign(
-      { userId: user.user_id, sessionId, role: user.role }, 
-      process.env.JWT_SECRET, 
-      { expiresIn: '24h' }
+      { userId: user.user_id, sessionId, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: "24h" }
     );
 
     await pool.query(
-      "UPDATE udise_data.users SET current_session_id = $1 WHERE user_id = $2", 
+      "UPDATE udise_data.users SET current_session_id = $1, last_login = NOW() WHERE user_id = $2",
       [sessionId, user.user_id]
     );
 
@@ -56,7 +71,16 @@ exports.googleLogin = async (req, res) => {
       maxAge: 24 * 60 * 60 * 1000,
     });
 
-    res.json({ success: true, user: { id: user.user_id, email: user.email, name: user.name, role: user.role, picture } });
+    res.json({
+      success: true,
+      user: {
+        id: user.user_id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+        picture,
+      },
+    });
   } catch (error) {
     res.status(401).json({ error: "Authentication failed" });
   }
@@ -64,14 +88,17 @@ exports.googleLogin = async (req, res) => {
 
 exports.getMe = async (req, res) => {
   const result = await pool.query(
-    "SELECT user_id as id, email, name, role, profile_picture as picture FROM udise_data.users WHERE user_id = $1", 
+    "SELECT user_id as id, email, name, role, profile_picture as picture FROM udise_data.users WHERE user_id = $1",
     [req.user.userId]
   );
   res.json({ user: result.rows[0] });
 };
 
 exports.logout = async (req, res) => {
-  await pool.query("UPDATE udise_data.users SET current_session_id = NULL WHERE user_id = $1", [req.user.userId]);
+  await pool.query(
+    "UPDATE udise_data.users SET current_session_id = NULL WHERE user_id = $1",
+    [req.user.userId]
+  );
   res.clearCookie("auth_token");
   res.json({ success: true });
 };
