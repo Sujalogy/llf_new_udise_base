@@ -27,7 +27,6 @@ app.use(
       if (allowedOrigins.indexOf(origin) !== -1) {
         callback(null, true);
       } else {
-        console.log("CORS Blocked for origin:", origin); // Helpful for debugging production logs
         callback(new Error("Not allowed by CORS"));
       }
     },
