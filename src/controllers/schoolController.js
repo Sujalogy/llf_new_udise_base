@@ -1,52 +1,51 @@
 const pool = require("../config/db");
 const schoolModel = require("../models/schoolModel");
 const apiService = require("../services/apiService");
+const adminController = require("./adminController");
 
 exports.syncDirectory = async (req, res) => {
   try {
     const { stcode11, dtcode11 } = req.body;
 
-    // 1. Get ALL potential Object IDs from Master
     const allObjectIds = await schoolModel.getObjectIds(stcode11, dtcode11);
-
     if (!allObjectIds.length) {
       return res.json({
         success: true,
         count: 0,
-        message: "No Object IDs found in Master for this district.",
+        message: "No Object IDs found.",
       });
     }
 
-    // 2. [NEW] Get IDs that are ALREADY synced
     const existingObjectIds = await schoolModel.getExistingObjectIds(
       stcode11,
       dtcode11
     );
-
-    // 3. [NEW] Filter: Keep only IDs that are NOT in the existing list
-    // Convert to String for safe comparison
     const existingSet = new Set(existingObjectIds.map(String));
     const idsToSync = allObjectIds.filter((id) => !existingSet.has(String(id)));
 
     if (idsToSync.length === 0) {
+      // Even if already synced, we try to resolve any orphaned tickets
+      await adminController.resolveTicketsAfterSync(stcode11, dtcode11);
       return res.json({
         success: true,
         count: 0,
-        message: "All schools in this district are already synced.",
+        message: "All schools already synced.",
       });
     }
 
-    // 4. Fetch ONLY the missing IDs
     const count = await apiService.syncSchoolsFromGIS(
       stcode11,
       dtcode11,
-      idsToSync // <--- Passing only the new IDs
+      idsToSync
     );
+
+    // [ACTION] Resolve pending tickets after directory sync
+    await adminController.resolveTicketsAfterSync(stcode11, dtcode11);
 
     res.json({
       success: true,
       count,
-      message: `Directory Sync: Added ${count} new schools.`,
+      message: `Directory Sync: Added ${count} new schools. User tickets resolved.`,
     });
   } catch (err) {
     console.error("Directory Sync Error:", err);
@@ -57,16 +56,15 @@ exports.syncDirectory = async (req, res) => {
 exports.syncSchoolDetails = async (req, res) => {
   try {
     const { stcode11, dtcode11, yearId, udiseList, batchSize, strictMode } =
-      req.body; // [NEW] Read config
+      req.body;
 
     const validYearId = yearId && parseInt(yearId) > 0 ? yearId : 11;
 
-    // [CONFIG] Set defaults if not provided
+    // 1. [CONFIG] Set defaults and resolve Year Description
     const CHUNK_SIZE =
       batchSize && parseInt(batchSize) > 0 ? parseInt(batchSize) : 5;
-    const IS_STRICT = strictMode === true; // Default false if undefined
+    const IS_STRICT = strictMode === true;
 
-    // A. Fetch Years Metadata
     const yearsMeta = await apiService.fetchYears();
     const selectedYearMeta = yearsMeta.find(
       (y) => String(y.yearId) === String(validYearId)
@@ -75,7 +73,7 @@ exports.syncSchoolDetails = async (req, res) => {
       ? selectedYearMeta.yearDesc
       : `${validYearId}`;
 
-    // B. Determine List
+    // 2. Determine School List
     let schools = [];
     if (udiseList && Array.isArray(udiseList) && udiseList.length > 0) {
       schools = udiseList.map((code) => ({ udise_code: code }));
@@ -91,62 +89,54 @@ exports.syncSchoolDetails = async (req, res) => {
     let skipped = 0;
     let failed = 0;
 
-    // [UPDATED LOOP] Use dynamic CHUNK_SIZE
+    // 3. Main Sync Loop with Batching
     for (let i = 0; i < schools.length; i += CHUNK_SIZE) {
       const chunk = schools.slice(i, i + CHUNK_SIZE);
 
       const promises = chunk.map(async (school) => {
         try {
-          // [CHECK 1]: Already Exists?
+          // Check if detailed data already exists locally
           const existingRecord = await schoolModel.checkSchoolDataExists(
             school.udise_code,
             yearDesc
           );
 
-          if (existingRecord) {
-            // If Strict Mode is ON, we might want to re-check validity even if it exists.
-            // But for now, let's keep the standard "if name exists, skip" logic to save time.
-            if (existingRecord.school_name) {
-              skipped++;
-              return;
-            } else {
-              await schoolModel.logSkippedSchool(
-                school.udise_code,
-                stcode11,
-                dtcode11,
-                yearDesc,
-                "Already Exists (Incomplete Data)"
-              );
-              skipped++;
-              return;
-            }
+          if (existingRecord && existingRecord.school_name) {
+            skipped++;
+            return;
           }
 
-          // [ACTION]: Fetch
+          // Fetch from UDISE+ API
           const fullData = await apiService.fetchFullSchoolData(
             school.udise_code,
             validYearId
           );
 
-          // [CHECK 2]: Data Validation
-          const hasBasicData =
-            fullData && fullData.report && fullData.report.schoolName;
+          // [NEW VALIDATION]: Check if BOTH name and block are missing
+          const hasName = fullData?.report?.schoolName;
+          const hasBlock = fullData?.report?.blockName;
+          const isDataMissing = !hasName && !hasBlock;
 
-          // Logic:
-          // If Strict Mode = TRUE: We REQUIRE schoolName. If missing -> Fail/Skip.
-          // If Strict Mode = FALSE: We allow partial data (though DB constraints might still fail later).
-
-          const isValid = IS_STRICT ? hasBasicData : fullData !== null;
+          // Determine validity based on strict mode and missing mandatory fields
+          const isValid = IS_STRICT
+            ? hasName && hasBlock
+            : fullData !== null && !isDataMissing;
 
           if (isValid) {
             fullData.yearDesc = yearDesc;
             await schoolModel.upsertSchoolDetails(fullData);
+
+            // Clean up the skipped table if this school was previously failing
             await schoolModel.removeSkippedSchool(school.udise_code);
             processed++;
           } else {
-            const reason = IS_STRICT
-              ? "Validation Failed (Strict Mode)"
-              : "API Returned Empty";
+            // [LOG TO SKIPPED]: Log school if mandatory fields are missing for this year
+            const reason = isDataMissing
+              ? "Missing School Name & Block"
+              : fullData === null
+              ? "API Returned Empty"
+              : "Validation Failed (Strict Mode)";
+
             await schoolModel.logSkippedSchool(
               school.udise_code,
               stcode11,
@@ -157,34 +147,37 @@ exports.syncSchoolDetails = async (req, res) => {
             failed++;
           }
         } catch (innerErr) {
-          if (innerErr.code === "23505") {
-            skipped++;
-          } else {
-            console.error(
-              `❌ Error processing ${school.udise_code}:`,
-              innerErr.message
-            );
-            await schoolModel.logSkippedSchool(
-              school.udise_code,
-              stcode11,
-              dtcode11,
-              yearDesc,
-              `Error: ${innerErr.message}`
-            );
-            failed++;
-          }
+          console.error(
+            `❌ Error syncing ${school.udise_code}:`,
+            innerErr.message
+          );
+
+          // Log specific DB/API errors as the skip reason
+          await schoolModel.logSkippedSchool(
+            school.udise_code,
+            stcode11,
+            dtcode11,
+            yearDesc,
+            `Error: ${innerErr.message}`
+          );
+          failed++;
         }
       });
 
       await Promise.all(promises);
     }
 
+    // 4. [AUTO-RESOLVE]: Clear user requests for this district now that sync is finished
+    if (stcode11 && dtcode11) {
+      await adminController.resolveTicketsAfterSync(stcode11, dtcode11);
+    }
+
     res.json({
       success: true,
       count: processed,
-      skipped: skipped,
-      failed: failed,
-      message: `Sync Complete: ${processed} updated, ${skipped} skipped, ${failed} failed.`,
+      skipped,
+      failed,
+      message: `Sync Complete: ${processed} schools added/updated. Notifications resolved.`,
     });
   } catch (err) {
     console.error("Critical Sync Error:", err);
@@ -227,14 +220,14 @@ exports.getMySchools = async (req, res) => {
       if (match) yearDesc = match.yearDesc;
     }
 
-   const filters = {
+    const filters = {
       stcode11,
       dtcode11,
-      schoolType, 
+      schoolType,
       category,
       management,
       yearDesc,
-      search
+      search,
     };
 
     const result = await schoolModel.getLocalSchoolList(
@@ -260,13 +253,13 @@ exports.getFilters = async (req, res) => {
     const [typesRes, catsRes, mgmtRes] = await Promise.all([
       pool.query(schoolTypesQuery),
       pool.query(categoriesQuery),
-      pool.query(managementsQuery)
+      pool.query(managementsQuery),
     ]);
 
     res.json({
-      schoolTypes: typesRes.rows.map(r => r.school_type),
-      categories: catsRes.rows.map(r => r.category), // [NEW]
-      managements: mgmtRes.rows.map(r => r.management_type)
+      schoolTypes: typesRes.rows.map((r) => r.school_type),
+      categories: catsRes.rows.map((r) => r.category), // [NEW]
+      managements: mgmtRes.rows.map((r) => r.management_type),
     });
   } catch (err) {
     console.error(err);
@@ -505,7 +498,7 @@ exports.getLocalSchoolDetails = async (req, res) => {
       (typeof val === "string" ? JSON.parse(val) : val) || [];
     const socialGen = parse(school.social_data_general_sc_st_obc);
     const socialCwsn = parse(school.social_data_cwsn); // Flag 2
-    const socialEws = parse(school.social_data_ews);   // Flag 4
+    const socialEws = parse(school.social_data_ews); // Flag 4
 
     // Construct the response object to match Frontend Interfaces
     const response = {
@@ -513,39 +506,39 @@ exports.getLocalSchoolDetails = async (req, res) => {
         udise_code: school.udise_code,
         school_name: school.school_name,
         // [NEW] Contact & Location
-        school_phone: school.school_phone, 
+        school_phone: school.school_phone,
         location_type: school.location_type,
-        
+
         state_name: school.state_name,
         district_name: school.district_name,
         block_name: school.block_name,
         cluster: school.cluster_name,
         village: school.village_ward_name,
-        pincode: school.pincode || "", 
-        
+        pincode: school.pincode || "",
+
         // [NEW] Use the new 'category' column if available, else fallback
-        category_name: school.category || school.school_type, 
+        category_name: school.category || school.school_type,
         management_type: school.management_type || "Department of Education",
-        
+
         // [NEW] Basic Info
         establishment_year: school.establishment_year || 0,
         head_master: school.head_master_name,
         school_status: school.school_status,
         year_desc: school.year_desc,
-        
+
         // [NEW] Extra Profile Flags
         is_pre_primary_section: school.is_pre_primary_section,
         residential_school_type: school.residential_school_type,
         is_cwsn_school: school.is_cwsn_school,
         shift_school: school.is_shift_school,
-        
+
         // [NEW] Mediums & Instruction
         medium_of_instruction_1: school.medium_of_instruction_1,
         medium_of_instruction_2: school.medium_of_instruction_2,
         medium_of_instruction_3: school.medium_of_instruction_3,
         medium_of_instruction_4: school.medium_of_instruction_4,
         instructional_days: school.instructional_days,
-        
+
         // [NEW] Visits
         visits_by_brc: school.visits_by_brc,
         visits_by_crc: school.visits_by_crc,
@@ -558,20 +551,20 @@ exports.getLocalSchoolDetails = async (req, res) => {
         good_condition_classrooms: school.good_condition_classrooms,
         boundary_wall: school.boundary_wall_type || "Unknown",
         furniture: "Unknown", // Field not in DB, keep placeholder or remove
-        
+
         // Sanitation
         toilet_boys: school.total_toilets_boys,
         toilet_girls: school.total_toilets_girls,
         urinals_boys: school.urinals_boys, // [NEW]
         urinals_girls: school.urinals_girls, // [NEW]
-        
+
         // Amenities (Booleans)
         electricity: school.has_electricity,
         library: school.has_library,
         playground: school.has_playground,
         drinking_water: school.has_drinking_water_facility,
         ramp: school.has_ramps, // [UPDATED] Mapped from DB
-        
+
         // [NEW] Amenities
         has_handwash_meal: school.has_handwash_meal,
         has_handwash_common: school.has_handwash_common,
@@ -580,7 +573,7 @@ exports.getLocalSchoolDetails = async (req, res) => {
         has_hm_room: school.has_hm_room,
         has_solar_panel: school.has_solar_panel,
         has_rain_harvesting: school.has_rain_harvesting,
-        
+
         // [NEW] Digital & Furniture
         has_internet: school.has_internet,
         has_dth_access: school.has_dth_access,
@@ -604,16 +597,16 @@ exports.getLocalSchoolDetails = async (req, res) => {
         regular: school.total_regular_teachers,
         contract: school.total_contract_teachers,
         part_time: school.total_part_time_teachers, // [NEW]
-        
+
         // [NEW] Engagement
         non_teaching_assignments: school.teachers_non_teaching_assignments,
         in_service_training: school.teachers_in_service_training,
-        
+
         // [NEW] Academic Stats
         below_graduate: school.teachers_below_graduate,
         graduate_above: school.teachers_graduate_above,
         post_graduate_above: school.teachers_post_graduate_above,
-        
+
         // [NEW] Professional Quals
         qual_diploma_basic: school.teacher_qual_diploma_basic,
         qual_bele: school.teacher_qual_bele,
@@ -651,18 +644,23 @@ exports.getDashboardStats = async (req, res) => {
   }
 };
 
-
 exports.getSkippedSummary = async (req, res) => {
   try {
     const { yearId, stcode11 } = req.query;
-    
-    // Optional: Resolve yearId to yearDesc if your DB stores yearDesc
-    // For now passing yearId directly assuming the frontend sends the value stored in DB (or handle conversion)
-    const summary = await schoolModel.getSkippedSummary({ 
-      yearId, 
-      stcode11 
+    let finalYear = yearId;
+
+    // Convert numeric ID (11) to DB string (2024-25)
+    if (yearId && !isNaN(parseInt(yearId))) {
+      const years = await apiService.fetchYears();
+      const match = years.find((y) => String(y.yearId) === String(yearId));
+      if (match) finalYear = match.yearDesc;
+    }
+
+    const summary = await schoolModel.getSkippedSummary({
+      yearId: finalYear, // Now matches "2024-25" in database
+      stcode11,
     });
-    
+
     res.json(summary);
   } catch (err) {
     console.error("Skipped Summary Error:", err);
@@ -672,41 +670,56 @@ exports.getSkippedSummary = async (req, res) => {
 
 exports.exportSkippedList = async (req, res) => {
   try {
-    const { format = 'json', yearId, stcode11, dtcode11 } = req.query;
-    
-    const data = await schoolModel.getSkippedForExport({ 
-      yearId, 
-      stcode11, 
-      dtcode11 
+    const { format = "json", yearId, stcode11, dtcode11 } = req.query;
+
+    const data = await schoolModel.getSkippedForExport({
+      yearId,
+      stcode11,
+      dtcode11,
     });
 
-    if (format === 'csv') {
+    if (format === "csv") {
       // Basic CSV conversion
-      const headers = ['UDISE Code', 'School Name', 'State', 'District', 'Year', 'Reason', 'Date'];
-      const csvRows = [headers.join(',')];
-      
-      data.forEach(row => {
-        csvRows.push([
-          row.udise_code,
-          `"${(row.school_name || '').replace(/"/g, '""')}"`, // Escape quotes
-          row.stname,
-          row.dtname,
-          row.year_desc,
-          `"${(row.reason || '').replace(/"/g, '""')}"`,
-          new Date(row.created_at).toLocaleDateString()
-        ].join(','));
+      const headers = [
+        "UDISE Code",
+        "School Name",
+        "State",
+        "District",
+        "Year",
+        "Reason",
+        "Date",
+      ];
+      const csvRows = [headers.join(",")];
+
+      data.forEach((row) => {
+        csvRows.push(
+          [
+            row.udise_code,
+            `"${(row.school_name || "").replace(/"/g, '""')}"`, // Escape quotes
+            row.stname,
+            row.dtname,
+            row.year_desc,
+            `"${(row.reason || "").replace(/"/g, '""')}"`,
+            new Date(row.created_at).toLocaleDateString(),
+          ].join(",")
+        );
       });
-      
-      res.setHeader('Content-Type', 'text/csv');
-      res.setHeader('Content-Disposition', 'attachment; filename=skipped_schools.csv');
-      return res.send(csvRows.join('\n'));
+
+      res.setHeader("Content-Type", "text/csv");
+      res.setHeader(
+        "Content-Disposition",
+        "attachment; filename=skipped_schools.csv"
+      );
+      return res.send(csvRows.join("\n"));
     }
 
     // Default JSON
-    res.setHeader('Content-Type', 'application/json');
-    res.setHeader('Content-Disposition', 'attachment; filename=skipped_schools.json');
+    res.setHeader("Content-Type", "application/json");
+    res.setHeader(
+      "Content-Disposition",
+      "attachment; filename=skipped_schools.json"
+    );
     res.json(data);
-
   } catch (err) {
     console.error("Export Skipped Error:", err);
     res.status(500).json({ error: "Failed to export skipped list" });
@@ -716,21 +729,27 @@ exports.exportSkippedList = async (req, res) => {
 exports.getStateMatrix = async (req, res) => {
   try {
     const rawRows = await schoolModel.getStateMatrix();
-    
+
     // Process flat ROLLUP rows into a hierarchical structure
     const stateMap = {};
 
-    rawRows.forEach(row => {
+    rawRows.forEach((row) => {
       // Skip the Grand Total row (where state is null)
       if (!row.state_name) return;
 
       // Initialize State Entry if missing
       if (!stateMap[row.state_name]) {
         stateMap[row.state_name] = {
-          type: 'state',
+          type: "state",
           name: row.state_name,
-          stats: { schools: 0, districts: 0, blocks: 0, teachers: 0, students: 0 },
-          districts: []
+          stats: {
+            schools: 0,
+            districts: 0,
+            blocks: 0,
+            teachers: 0,
+            students: 0,
+          },
+          districts: [],
         };
       }
 
@@ -741,26 +760,26 @@ exports.getStateMatrix = async (req, res) => {
           districts: parseInt(row.total_districts || 0),
           blocks: parseInt(row.total_blocks || 0),
           teachers: parseInt(row.total_teachers || 0),
-          students: parseInt(row.total_students || 0)
+          students: parseInt(row.total_students || 0),
         };
       } else {
         // [DISTRICT DETAIL ROW] - Add to the districts array
         stateMap[row.state_name].districts.push({
-          type: 'district',
+          type: "district",
           name: row.district_name,
           stats: {
-             schools: parseInt(row.total_schools || 0),
-             districts: 1,
-             blocks: parseInt(row.total_blocks || 0),
-             teachers: parseInt(row.total_teachers || 0),
-             students: parseInt(row.total_students || 0)
-          }
+            schools: parseInt(row.total_schools || 0),
+            districts: 1,
+            blocks: parseInt(row.total_blocks || 0),
+            teachers: parseInt(row.total_teachers || 0),
+            students: parseInt(row.total_students || 0),
+          },
         });
       }
     });
 
     // Convert Map to Sorted Array
-    const hierarchy = Object.values(stateMap).sort((a, b) => 
+    const hierarchy = Object.values(stateMap).sort((a, b) =>
       a.name.localeCompare(b.name)
     );
 

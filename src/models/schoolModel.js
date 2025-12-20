@@ -654,7 +654,9 @@ exports.logSkippedSchool = async (udiseCode, stcode11, dtcode11, yearDesc, reaso
     (udise_code, stcode11, dtcode11, year_desc, reason)
     VALUES ($1, $2, $3, $4, $5)
     ON CONFLICT (udise_code, year_desc) 
-    DO UPDATE SET reason = EXCLUDED.reason, created_at = NOW()
+    DO UPDATE SET 
+      reason = EXCLUDED.reason, 
+      created_at = NOW()
   `;
   await pool.query(query, [udiseCode, stcode11, dtcode11, yearDesc, reason]);
 };

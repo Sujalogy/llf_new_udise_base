@@ -182,11 +182,9 @@ exports.resolveTicket = async (stcode11, dtcode11) => {
   }
 };
 
-// This function should be called after your sync database insert is successful
-const resolveTickets = async (stcode11, dtcode11) => {
+exports.resolveTicketsAfterSync = async (stcode11, dtcode11) => {
   try {
-    // We use the PostgreSQL '&&' operator to see if the synced district 
-    // is part of any pending user requests
+    // We convert the single synced dtcode11 into an array to use the overlap operator
     const result = await pool.query(`
       UPDATE udise_data.data_requests 
       SET 
@@ -196,11 +194,13 @@ const resolveTickets = async (stcode11, dtcode11) => {
         stcode11 = $1 
         AND dtcode11 && ARRAY[$2]::text[] 
         AND status = 'pending'
-      RETURNING user_id, stname, dtnames;
+      RETURNING request_id, user_id;
     `, [stcode11, dtcode11]);
     
-    return result.rows; // Returns users who should be notified that data is ready
+    if (result.rowCount > 0) {
+      console.log(`✅ Auto-resolved ${result.rowCount} user tickets for district: ${dtcode11}`);
+    }
   } catch (err) {
-    console.error("Failed to auto-resolve tickets:", err);
+    console.error("❌ Auto-resolve failed:", err);
   }
 };
