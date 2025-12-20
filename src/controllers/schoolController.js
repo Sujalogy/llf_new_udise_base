@@ -729,63 +729,74 @@ exports.exportSkippedList = async (req, res) => {
 exports.getStateMatrix = async (req, res) => {
   try {
     const rawRows = await schoolModel.getStateMatrix();
-
-    // Process flat ROLLUP rows into a hierarchical structure
     const stateMap = {};
+    
+    // Capture global lifecycle totals from first row
+    const lifecycle = rawRows.length > 0 ? {
+        master: rawRows[0].master_object_count,
+        directory: rawRows[0].directory_list_count,
+        fetched: rawRows[0].total_fetched_data
+    } : { master: 0, directory: 0, fetched: 0 };
 
     rawRows.forEach((row) => {
-      // Skip the Grand Total row (where state is null)
       if (!row.state_name) return;
 
-      // Initialize State Entry if missing
       if (!stateMap[row.state_name]) {
         stateMap[row.state_name] = {
-          type: "state",
           name: row.state_name,
-          stats: {
-            schools: 0,
-            districts: 0,
-            blocks: 0,
-            teachers: 0,
-            students: 0,
-          },
-          districts: [],
+          type: "state",
+          stats: { schools: 0, teachers: 0, students: 0, infra_index: 0, ptr: 0, gpi: 0 },
+          districts: {},
         };
       }
 
+      const state = stateMap[row.state_name];
+
       if (!row.district_name) {
-        // [STATE SUMMARY ROW] - This contains the totals for the state
-        stateMap[row.state_name].stats = {
-          schools: parseInt(row.total_schools || 0),
-          districts: parseInt(row.total_districts || 0),
-          blocks: parseInt(row.total_blocks || 0),
-          teachers: parseInt(row.total_teachers || 0),
-          students: parseInt(row.total_students || 0),
+        // State Totals
+        state.stats = { 
+            schools: row.total_schools, teachers: row.total_teachers, students: row.total_students,
+            infra_index: row.infra_index, ptr: row.ptr, gpi: row.gpi 
         };
       } else {
-        // [DISTRICT DETAIL ROW] - Add to the districts array
-        stateMap[row.state_name].districts.push({
-          type: "district",
-          name: row.district_name,
-          stats: {
-            schools: parseInt(row.total_schools || 0),
-            districts: 1,
-            blocks: parseInt(row.total_blocks || 0),
-            teachers: parseInt(row.total_teachers || 0),
-            students: parseInt(row.total_students || 0),
-          },
-        });
+        if (!state.districts[row.district_name]) {
+          state.districts[row.district_name] = {
+            name: row.district_name,
+            type: "district",
+            stats: { schools: 0, teachers: 0, students: 0, infra_index: 0, ptr: 0, gpi: 0 },
+            blocks: [],
+          };
+        }
+        const district = state.districts[row.district_name];
+
+        if (!row.block_name) {
+          // District Totals
+          district.stats = { 
+              schools: row.total_schools, teachers: row.total_teachers, students: row.total_students,
+              infra_index: row.infra_index, ptr: row.ptr, gpi: row.gpi 
+          };
+        } else {
+          // Block Totals
+          district.blocks.push({
+            name: row.block_name,
+            type: "block",
+            stats: { 
+                schools: row.total_schools, teachers: row.total_teachers, students: row.total_students,
+                infra_index: row.infra_index, ptr: row.ptr, gpi: row.gpi 
+            },
+          });
+        }
       }
     });
 
-    // Convert Map to Sorted Array
-    const hierarchy = Object.values(stateMap).sort((a, b) =>
-      a.name.localeCompare(b.name)
-    );
+    const hierarchy = Object.values(stateMap).map((s) => ({
+      ...s,
+      districts: Object.values(s.districts).sort((a, b) => a.name.localeCompare(b.name)),
+    })).sort((a, b) => a.name.localeCompare(b.name));
 
-    res.json(hierarchy);
+    // Return both the hierarchy and the global lifecycle counts
+    res.json({ hierarchy, lifecycle });
   } catch (err) {
-    console.error("Matrix Error:", err);
     res.status(500).json({ error: err.message });
   }
 };

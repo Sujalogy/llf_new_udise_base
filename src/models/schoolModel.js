@@ -775,20 +775,38 @@ exports.getSkippedForExport = async ({ yearId, stcode11, dtcode11 }) => {
 };
 
 exports.getStateMatrix = async () => {
-  // Uses GROUP BY ROLLUP to get State aggregates AND District aggregates in one query
+  // Enhanced ROLLUP with added systemic lifecycle counts
   const query = `
     SELECT 
       state_name,
       district_name,
+      block_name,
       COUNT(udise_code)::int as total_schools,
-      COUNT(DISTINCT district_name)::int as total_districts,
-      COUNT(DISTINCT block_name)::int as total_blocks,
       SUM(total_teachers)::int as total_teachers,
-      SUM(total_students)::int as total_students
+      SUM(total_regular_teachers)::int as reg_teachers,
+      SUM(total_contract_teachers)::int as con_teachers,
+      SUM(total_students)::int as total_students,
+      SUM(total_boy_students)::int as total_boys,
+      SUM(total_girl_students)::int as total_girls,
+      
+      -- 1. CEO Insight: Systemic Lifecycle Counts
+      (SELECT COUNT(object_id) FROM udise_data.master_object) as master_object_count,
+      (SELECT COUNT(schcd) FROM udise_data.school_udise_list) as directory_list_count,
+      (SELECT COUNT(*) FROM udise_data.school_udise_data) as total_fetched_data,
+
+      -- 2. Infrastructure Index (Electricity, Water, Internet, Toilets, Library)
+      ROUND(AVG((has_electricity::int + has_drinking_water_facility::int + has_internet::int + has_library::int + has_playground::int)::float / 5 * 100)) as infra_index,
+      
+      -- 3. Pupil-Teacher Ratio (PTR)
+      ROUND((SUM(total_students)::float / NULLIF(SUM(total_teachers), 0))::numeric, 1) as ptr,
+      
+      -- 4. Gender Parity Index (GPI)
+      ROUND((SUM(total_girl_students)::float / NULLIF(SUM(total_boy_students), 0))::numeric, 2) as gpi
+      
     FROM udise_data.school_udise_data
     WHERE state_name IS NOT NULL
-    GROUP BY ROLLUP(state_name, district_name)
-    ORDER BY state_name NULLS LAST, district_name NULLS LAST
+    GROUP BY ROLLUP(state_name, district_name, block_name)
+    ORDER BY state_name NULLS LAST, district_name NULLS LAST, block_name NULLS LAST
   `;
 
   const result = await pool.query(query);
