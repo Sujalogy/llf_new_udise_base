@@ -28,7 +28,8 @@ exports.authenticate = async (req, res, next) => {
 };
 
 exports.authorizeAdmin = (req, res, next) => {
-  if (req.user.role !== "admin") {
+  // Add a safety check to see if req.user exists
+  if (!req.user || req.user.role !== "admin") {
     return res.status(403).json({ error: "Admin access required" });
   }
   next();

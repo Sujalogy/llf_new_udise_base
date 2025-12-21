@@ -196,10 +196,7 @@ exports.resolveTicketsAfterSync = async (stcode11, dtcode11) => {
         AND status = 'pending'
       RETURNING request_id, user_id;
     `, [stcode11, dtcode11]);
-    
-    if (result.rowCount > 0) {
-      console.log(`✅ Auto-resolved ${result.rowCount} user tickets for district: ${dtcode11}`);
-    }
+  
   } catch (err) {
     console.error("❌ Auto-resolve failed:", err);
   }

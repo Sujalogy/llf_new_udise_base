@@ -5,6 +5,7 @@ const locationRoutes = require("./routes/locationRoutes");
 const schoolRoutes = require("./routes/schoolRoutes");
 const authRoutes = require("./routes/authRoutes");
 const adminRoutes = require("./routes/adminRoutes"); // [NEW] Added admin routes
+const aiRoutes = require("./routes/aiRoutes");
 const { getYears } = require("./controllers/locationController");
 
 const app = express();
@@ -54,6 +55,7 @@ app.use("/api/auth", authRoutes); // Auth first
 app.use("/api/locations", locationRoutes);
 app.use("/api/schools", schoolRoutes);
 app.use("/api/admin", adminRoutes); // [NEW] Secure Admin Management
+app.use("/api/ai", aiRoutes);
 
 // Metadata Routes
 app.get("/api/years", getYears);
