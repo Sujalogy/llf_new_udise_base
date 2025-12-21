@@ -6,6 +6,20 @@ const crypto = require("crypto");
 
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
+// Helper function to get cookie options
+const getCookieOptions = () => {
+  const isProduction = process.env.NODE_ENV === "production";
+  
+  return {
+    httpOnly: true,
+    secure: isProduction, // true in production (HTTPS required)
+    sameSite: isProduction ? "none" : "lax", // 'none' for cross-domain in production
+    maxAge: 24 * 60 * 60 * 1000, // 24 hours
+    domain: isProduction ? ".llf.org.in" : undefined, // Share cookie across subdomains
+    path: "/",
+  };
+};
+
 exports.googleLogin = async (req, res) => {
   try {
     const { credential } = req.body;
@@ -23,6 +37,7 @@ exports.googleLogin = async (req, res) => {
           "Access is restricted to @languageandlearningfoundation.org emails.",
       });
     }
+    
     const today = new Date().toISOString().split("T")[0];
 
     // Upsert User with status 'pending' if new
@@ -64,12 +79,8 @@ exports.googleLogin = async (req, res) => {
       [sessionId, user.user_id]
     );
 
-    res.cookie("auth_token", token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "Lax",
-      maxAge: 24 * 60 * 60 * 1000,
-    });
+    // Set cookie with proper configuration for cross-domain
+    res.cookie("auth_token", token, getCookieOptions());
 
     res.json({
       success: true,
@@ -82,23 +93,51 @@ exports.googleLogin = async (req, res) => {
       },
     });
   } catch (error) {
-    res.status(401).json({ error: "Authentication failed" });
+    console.error("Google login error:", error);
+    res.status(401).json({ 
+      error: "Authentication failed",
+      message: error.message 
+    });
   }
 };
 
 exports.getMe = async (req, res) => {
-  const result = await pool.query(
-    "SELECT user_id as id, email, name, role, profile_picture as picture FROM udise_data.users WHERE user_id = $1",
-    [req.user.userId]
-  );
-  res.json({ user: result.rows[0] });
+  try {
+    const result = await pool.query(
+      "SELECT user_id as id, email, name, role, profile_picture as picture FROM udise_data.users WHERE user_id = $1",
+      [req.user.userId]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    
+    res.json({ user: result.rows[0] });
+  } catch (error) {
+    console.error("Get user error:", error);
+    res.status(500).json({ error: "Failed to fetch user data" });
+  }
 };
 
 exports.logout = async (req, res) => {
-  await pool.query(
-    "UPDATE udise_data.users SET current_session_id = NULL WHERE user_id = $1",
-    [req.user.userId]
-  );
-  res.clearCookie("auth_token");
-  res.json({ success: true });
+  try {
+    await pool.query(
+      "UPDATE udise_data.users SET current_session_id = NULL WHERE user_id = $1",
+      [req.user.userId]
+    );
+    
+    // Clear cookie with same options (except maxAge)
+    res.clearCookie("auth_token", {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+      domain: process.env.NODE_ENV === "production" ? ".llf.org.in" : undefined,
+      path: "/",
+    });
+    
+    res.json({ success: true, message: "Logged out successfully" });
+  } catch (error) {
+    console.error("Logout error:", error);
+    res.status(500).json({ error: "Logout failed" });
+  }
 };
