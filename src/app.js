@@ -20,8 +20,10 @@ const allowedOrigins = [
 ];
 
 app.use(cors({
-  origin: "https://school-directory.llf.org.in",
-  credentials: true
+  origin: allowedOrigins, // Express-cors accepts an array automatically
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"]
 }));
 
 app.use(cookieParser()); // [NEW] Parse cookies before routes
@@ -33,6 +35,8 @@ app.use((req, res, next) => {
   res.header("Access-Control-Allow-Credentials", "true");
   next();
 });
+app.options("*", cors());
+
 app.use("/api/auth", authRoutes); // Auth first
 app.use("/api/locations", locationRoutes);
 app.use("/api/schools", schoolRoutes);
