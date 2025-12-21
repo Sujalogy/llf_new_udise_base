@@ -6,41 +6,43 @@ const crypto = require("crypto");
 
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
-// Helper function to get cookie options
+// Helper function for cookie options
 const getCookieOptions = () => {
   const isProduction = process.env.NODE_ENV === "production";
   
   return {
     httpOnly: true,
-    secure: isProduction, // true in production (HTTPS required)
-    sameSite: isProduction ? "none" : "lax", // 'none' for cross-domain in production
+    secure: isProduction, // HTTPS required in production
+    sameSite: isProduction ? "none" : "lax", // "none" for cross-domain
     maxAge: 24 * 60 * 60 * 1000, // 24 hours
-    domain: isProduction ? ".llf.org.in" : undefined, // Share cookie across subdomains
+    domain: isProduction ? ".llf.org.in" : undefined, // Share across subdomains
     path: "/",
   };
 };
 
 exports.googleLogin = async (req, res) => {
   try {
+    console.log("🔐 Google login attempt");
     const { credential } = req.body;
+    
     const ticket = await googleClient.verifyIdToken({
       idToken: credential,
       audience: process.env.GOOGLE_CLIENT_ID,
     });
 
     const { email, name, picture, sub: googleId } = ticket.getPayload();
+    console.log("✅ Google token verified for:", email);
 
     if (!email.endsWith("@languageandlearningfoundation.org")) {
+      console.log("❌ Unauthorized domain:", email);
       return res.status(403).json({
         error: "Unauthorized Domain",
-        message:
-          "Access is restricted to @languageandlearningfoundation.org emails.",
+        message: "Access is restricted to @languageandlearningfoundation.org emails.",
       });
     }
     
     const today = new Date().toISOString().split("T")[0];
 
-    // Upsert User with status 'pending' if new
     const upsertQuery = `
       INSERT INTO udise_data.users (email, google_id, name, profile_picture, last_login, status, last_attempt_date, login_attempts)
       VALUES ($1, $2, $3, $4, NOW(), 'pending', $5, 1)
@@ -50,6 +52,7 @@ exports.googleLogin = async (req, res) => {
         last_attempt_date = $5
       RETURNING *;
     `;
+    
     const result = await pool.query(upsertQuery, [
       email,
       googleId,
@@ -60,10 +63,10 @@ exports.googleLogin = async (req, res) => {
     const user = result.rows[0];
 
     if (user.status === "pending") {
+      console.log("⏳ User on waiting list:", email);
       return res.status(403).json({
         error: "Waiting List",
-        message:
-          "You are on the waiting list. Please contact Sujal for activation.",
+        message: "You are on the waiting list. Please contact Sujal for activation.",
       });
     }
 
@@ -79,9 +82,12 @@ exports.googleLogin = async (req, res) => {
       [sessionId, user.user_id]
     );
 
-    // Set cookie with proper configuration for cross-domain
-    res.cookie("auth_token", token, getCookieOptions());
+    // Set cookie with cross-domain support
+    const cookieOptions = getCookieOptions();
+    console.log("🍪 Setting cookie with options:", cookieOptions);
+    res.cookie("auth_token", token, cookieOptions);
 
+    console.log("✅ Login successful for:", email);
     res.json({
       success: true,
       user: {
@@ -93,7 +99,7 @@ exports.googleLogin = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("Google login error:", error);
+    console.error("❌ Google login error:", error);
     res.status(401).json({ 
       error: "Authentication failed",
       message: error.message 
@@ -114,7 +120,7 @@ exports.getMe = async (req, res) => {
     
     res.json({ user: result.rows[0] });
   } catch (error) {
-    console.error("Get user error:", error);
+    console.error("❌ Get user error:", error);
     res.status(500).json({ error: "Failed to fetch user data" });
   }
 };
@@ -126,18 +132,20 @@ exports.logout = async (req, res) => {
       [req.user.userId]
     );
     
-    // Clear cookie with same options (except maxAge)
+    const isProduction = process.env.NODE_ENV === "production";
+    
     res.clearCookie("auth_token", {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-      domain: process.env.NODE_ENV === "production" ? ".llf.org.in" : undefined,
+      secure: isProduction,
+      sameSite: isProduction ? "none" : "lax",
+      domain: isProduction ? ".llf.org.in" : undefined,
       path: "/",
     });
     
+    console.log("✅ Logout successful");
     res.json({ success: true, message: "Logged out successfully" });
   } catch (error) {
-    console.error("Logout error:", error);
+    console.error("❌ Logout error:", error);
     res.status(500).json({ error: "Logout failed" });
   }
 };
