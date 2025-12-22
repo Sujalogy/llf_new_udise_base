@@ -91,33 +91,37 @@ exports.downloadSchoolList = async (req, res) => {
 
     // 1. Fetch Data dynamically
     const rawData = await schoolModel.getExportData(filters);
-
     if (!rawData.length) {
       return res.status(404).json({ error: "No data found matching your filters." });
     }
 
-    // 2. Log the download for Monitoring
-    await pool.query(
-      "INSERT INTO udise_data.download_logs (user_id, format, filters) VALUES ($1, $2, $3)",
-      [userId, format, JSON.stringify(filters)]
-    );
-
-    // 3. Flatten Data
     const flatData = rawData.map(flattenSocialData);
-
     const filename = `schools_export_${yearDesc || 'all'}_${stcode11 || 'all'}`;
 
-    // 4. Send Response
+    let finalData;
+    let contentType;
+
     if (format === "csv") {
-      const csvData = jsonToCsv(flatData);
-      res.setHeader("Content-Type", "text/csv");
-      res.setHeader("Content-Disposition", `attachment; filename=${filename}.csv`);
-      return res.send(csvData);
+      finalData = jsonToCsv(flatData);
+      contentType = "text/csv";
     } else {
-      res.setHeader("Content-Type", "application/json");
-      res.setHeader("Content-Disposition", `attachment; filename=${filename}.json`);
-      return res.send(JSON.stringify(flatData, null, 2));
+      finalData = JSON.stringify(flatData, null, 2);
+      contentType = "application/json";
     }
+
+    // [UPDATED] Calculate size in bytes
+    const bytesDownloaded = Buffer.byteLength(finalData, 'utf8');
+
+    // [UPDATED] Log the download WITH byte size for monitoring
+    await pool.query(
+      "INSERT INTO udise_data.download_logs (user_id, format, filters, bytes_downloaded) VALUES ($1, $2, $3, $4)",
+      [userId, format, JSON.stringify(filters), bytesDownloaded]
+    );
+
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Content-Disposition", `attachment; filename=${filename}.${format}`);
+    return res.send(finalData);
+
   } catch (err) {
     console.error("Export Error:", err);
     res.status(500).json({ error: "Export failed", details: err.message });

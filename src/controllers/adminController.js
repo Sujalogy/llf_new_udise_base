@@ -7,13 +7,12 @@ exports.getMonitoringStats = async (req, res) => {
       SELECT 
         (SELECT COUNT(*) FROM udise_data.users) as total_users,
         (SELECT COUNT(*) FROM udise_data.users WHERE last_login > NOW() - INTERVAL '24 hours') as active_today,
-        (SELECT COUNT(*) FROM udise_data.download_logs) as total_downloads
+        (SELECT COUNT(*) FROM udise_data.download_logs) as total_downloads,
+        -- [NEW] Data usage stats in MB
+        (SELECT COALESCE(SUM(bytes_downloaded), 0) / (1024.0 * 1024.0) FROM udise_data.download_logs WHERE downloaded_at >= CURRENT_DATE) as daily_mb,
+        (SELECT COALESCE(SUM(bytes_downloaded), 0) / (1024.0 * 1024.0) FROM udise_data.download_logs WHERE downloaded_at >= CURRENT_DATE - INTERVAL '7 days') as weekly_mb,
+        (SELECT COALESCE(SUM(bytes_downloaded), 0) / (1024.0 * 1024.0) FROM udise_data.download_logs WHERE downloaded_at >= CURRENT_DATE - INTERVAL '30 days') as monthly_mb
     `);
-    const summary = summaryResult.rows[0] || {
-      total_users: 0,
-      active_today: 0,
-      total_downloads: 0,
-    };
 
     // 2. Download Velocity (Last 14 Days)
     const trends = await pool.query(`
@@ -28,11 +27,13 @@ exports.getMonitoringStats = async (req, res) => {
     const topUsers = await pool.query(`
       SELECT u.name, u.email, u.role, 
              COUNT(l.log_id) as download_count,
+             COALESCE(SUM(l.bytes_downloaded), 0) / (1024.0 * 1024.0) as total_mb,
+             COALESCE(SUM(CASE WHEN l.downloaded_at >= CURRENT_DATE THEN l.bytes_downloaded ELSE 0 END), 0) / (1024.0 * 1024.0) as daily_mb,
              MAX(l.downloaded_at) as last_download
       FROM udise_data.users u 
       LEFT JOIN udise_data.download_logs l ON u.user_id = l.user_id 
-      GROUP BY u.user_id 
-      ORDER BY download_count DESC 
+      GROUP BY u.user_id, u.name, u.email, u.role
+      ORDER BY total_mb DESC 
       LIMIT 10
     `);
 
@@ -46,7 +47,7 @@ exports.getMonitoringStats = async (req, res) => {
     `);
 
     res.json({
-      summary,
+      summary: summaryResult.rows[0],
       trends: trends.rows || [],
       topUsers: topUsers.rows || [],
       recentLogs: recentLogs.rows || [],
@@ -185,7 +186,8 @@ exports.resolveTicket = async (stcode11, dtcode11) => {
 exports.resolveTicketsAfterSync = async (stcode11, dtcode11) => {
   try {
     // We convert the single synced dtcode11 into an array to use the overlap operator
-    const result = await pool.query(`
+    const result = await pool.query(
+      `
       UPDATE udise_data.data_requests 
       SET 
         status = 'resolved', 
@@ -195,9 +197,30 @@ exports.resolveTicketsAfterSync = async (stcode11, dtcode11) => {
         AND dtcode11 && ARRAY[$2]::text[] 
         AND status = 'pending'
       RETURNING request_id, user_id;
-    `, [stcode11, dtcode11]);
-  
+    `,
+      [stcode11, dtcode11]
+    );
   } catch (err) {
     console.error("❌ Auto-resolve failed:", err);
+  }
+};
+
+exports.getUserUsageStats = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const query = `
+      SELECT 
+        SUM(CASE WHEN created_at >= CURRENT_DATE THEN bytes_downloaded ELSE 0 END) / (1024.0 * 1024.0) as daily_mb,
+        SUM(CASE WHEN created_at >= CURRENT_DATE - INTERVAL '7 days' THEN bytes_downloaded ELSE 0 END) / (1024.0 * 1024.0) as weekly_mb,
+        SUM(CASE WHEN created_at >= CURRENT_DATE - INTERVAL '30 days' THEN bytes_downloaded ELSE 0 END) / (1024.0 * 1024.0) as monthly_mb
+      FROM user_traffic_logs
+      WHERE user_id = $1
+    `;
+
+    const stats = await pool.query(query, [userId]);
+    res.json(stats.rows[0]);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 };
