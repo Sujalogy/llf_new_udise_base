@@ -22,7 +22,6 @@ const getCookieOptions = () => {
     // REAL PRODUCTION SETTINGS (Requires HTTPS and llf.org.in domain)
     options.secure = true;
     options.sameSite = "none"; 
-    console.log("Setting cookie domain to:", COOKIE_DOMAIN || ".llf.org.in");
     options.domain = COOKIE_DOMAIN || ".llf.org.in";
   } else {
     // LOCAL DEVELOPMENT SETTINGS (Works on http://localhost)
@@ -88,7 +87,6 @@ exports.googleLogin = async (req, res) => {
       process.env.JWT_SECRET,
       { expiresIn: "24h" }
     );
-    console.log("Generated JWT token:", token);
     await pool.query(
       "UPDATE udise_data.users SET current_session_id = $1, last_login = NOW() WHERE user_id = $2",
       [sessionId, user.user_id]
@@ -96,7 +94,6 @@ exports.googleLogin = async (req, res) => {
 
     // Set cookie with cross-domain support
     const cookieOptions = getCookieOptions();
-    console.log("Setting cookie with options:", cookieOptions);
     res.cookie("auth_token", token, cookieOptions);
     res.json({
       success: true,

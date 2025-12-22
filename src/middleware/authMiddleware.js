@@ -7,7 +7,6 @@ exports.authenticate = async (req, res, next) => {
   const token = req.cookies?.auth_token;
 
   if (!token) {
-    console.log("❌ No auth_token cookie found in request headers");
     return res.status(401).json({ error: "No session found" });
   }
 

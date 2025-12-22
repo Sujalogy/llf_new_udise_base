@@ -33,11 +33,6 @@ app.use(
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-app.use((req, res, next) => {
-  console.log(`🔍 [${req.method}] ${req.path} | Cookies:`, req.cookies);
-  next();
-});
-
 // Routes
 app.use("/api/auth", authRoutes);
 app.use("/api/locations", locationRoutes);
