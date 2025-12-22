@@ -81,4 +81,10 @@ router.post("/requests", controller.raiseDataRequest);
 router.get("/requests/pending", controller.getPendingRequests);
 router.get("/requests/user-notifications", controller.getUserNotifications);
 router.get("/locations/unsynced", controller.getUnsyncedLocations);
+router.get(
+  "/monitoring/logs",
+  authenticate,
+  authorizeAdmin,
+  controller.getPaginatedLogs //
+);
 module.exports = router;

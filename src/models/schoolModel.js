@@ -532,7 +532,6 @@ const buildWhereClause = (filters) => {
   const conditions = [];
   const params = [];
   let paramIdx = 1;
-
   // 1. Year Filter
   if (filters.yearDesc) {
     conditions.push(`d.year_desc = $${paramIdx++}`);

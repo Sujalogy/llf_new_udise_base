@@ -42,8 +42,6 @@ exports.googleLogin = async (req, res) => {
       audience: process.env.GOOGLE_CLIENT_ID,
     });
 
-    // console.log("Google ID Token Payload:", ticket);
-
     const { email, name, picture, sub: googleId } = ticket.getPayload();
 
     if (!email.endsWith("@languageandlearningfoundation.org")) {

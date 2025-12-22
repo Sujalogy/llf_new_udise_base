@@ -205,22 +205,42 @@ exports.resolveTicketsAfterSync = async (stcode11, dtcode11) => {
   }
 };
 
-exports.getUserUsageStats = async (req, res) => {
+exports.getPaginatedLogs = async (req, res) => {
   try {
-    const { userId } = req.params;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const offset = (page - 1) * limit;
 
-    const query = `
-      SELECT 
-        SUM(CASE WHEN created_at >= CURRENT_DATE THEN bytes_downloaded ELSE 0 END) / (1024.0 * 1024.0) as daily_mb,
-        SUM(CASE WHEN created_at >= CURRENT_DATE - INTERVAL '7 days' THEN bytes_downloaded ELSE 0 END) / (1024.0 * 1024.0) as weekly_mb,
-        SUM(CASE WHEN created_at >= CURRENT_DATE - INTERVAL '30 days' THEN bytes_downloaded ELSE 0 END) / (1024.0 * 1024.0) as monthly_mb
-      FROM user_traffic_logs
-      WHERE user_id = $1
+    // Query 1: Get the paginated data
+    const logsQuery = `
+      SELECT u.name, l.format, l.downloaded_at, l.filters
+      FROM udise_data.download_logs l
+      JOIN udise_data.users u ON l.user_id = u.user_id
+      ORDER BY l.downloaded_at DESC
+      LIMIT $1 OFFSET $2
     `;
 
-    const stats = await pool.query(query, [userId]);
-    res.json(stats.rows[0]);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+    // Query 2: Get total count for pagination UI
+    const countQuery = `SELECT COUNT(*) FROM udise_data.download_logs`;
+
+    const [logs, countResult] = await Promise.all([
+      pool.query(logsQuery, [limit, offset]),
+      pool.query(countQuery)
+    ]);
+
+    const totalLogs = parseInt(countResult.rows[0].count);
+    const totalPages = Math.ceil(totalLogs / limit);
+
+    res.json({
+      logs: logs.rows,
+      pagination: {
+        totalLogs,
+        totalPages,
+        currentPage: page,
+        limit
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch logs" });
   }
 };
