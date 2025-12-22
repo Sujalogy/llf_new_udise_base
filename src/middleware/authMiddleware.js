@@ -3,8 +3,7 @@ const jwt = require("jsonwebtoken");
 const pool = require("../config/db");
 
 exports.authenticate = async (req, res, next) => {
-  // Always check req.cookies (populated by cookie-parser)
-  const token = req.cookies?.auth_token;
+  const token = req.cookies["auth_token"];
 
   if (!token) {
     return res.status(401).json({ error: "No session found" });

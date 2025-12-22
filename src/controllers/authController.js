@@ -27,7 +27,6 @@ const getCookieOptions = () => {
     // LOCAL DEVELOPMENT SETTINGS (Works on http://localhost)
     options.secure = false; 
     options.sameSite = "lax";
-    options.domain = undefined; // Crucial: Do not set domain for localhost
   }
 
   return options;
@@ -42,6 +41,8 @@ exports.googleLogin = async (req, res) => {
       idToken: credential,
       audience: process.env.GOOGLE_CLIENT_ID,
     });
+
+    // console.log("Google ID Token Payload:", ticket);
 
     const { email, name, picture, sub: googleId } = ticket.getPayload();
 
@@ -73,7 +74,6 @@ exports.googleLogin = async (req, res) => {
       today,
     ]);
     const user = result.rows[0];
-
     if (user.status === "pending") {
       return res.status(403).json({
         error: "Waiting List",

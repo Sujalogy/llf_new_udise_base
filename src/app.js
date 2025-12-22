@@ -9,17 +9,28 @@ const aiRoutes = require("./routes/aiRoutes");
 const { getYears } = require("./controllers/locationController");
 
 const app = express();
+
 // CRITICAL: Trust proxy for production
 app.set("trust proxy", 1);
 
 app.use(cookieParser());
 
-app.use(cors({
-  origin: "*", 
-  credentials: true, // 👈 REQUIRED for cookies
-  methods: "*",
-  allowedHeaders: "*",
-}));
+// ✅ CORS Configuration with explicit OPTIONS handling
+const corsOptions = {
+  origin: process.env.NODE_ENV === "production"
+    ? ["https://school-directory.llf.org.in"] 
+    : ["http://localhost:8080"],
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"], // ✅ Explicit methods
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept"], // ✅ Explicit headers
+  exposedHeaders: ["Set-Cookie"], // ✅ Allow frontend to see cookies
+  maxAge: 86400, // ✅ Cache preflight for 24 hours
+};
+
+app.use(cors(corsOptions));
+
+// ✅ Handle preflight requests explicitly
+app.options("*", cors(corsOptions));
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -59,6 +70,7 @@ app.use((err, req, res, next) => {
     });
   }
 
+  const isProduction = process.env.NODE_ENV === "production";
   res.status(500).json({
     error: "Internal server error",
     message: isProduction ? "Something went wrong" : err.message,
