@@ -14,24 +14,8 @@ app.set("trust proxy", 1);
 
 app.use(cookieParser());
 
-const allowedOrigins = [
-  "http://localhost:8080", // Your local frontend port
-  "http://localhost:5173", // Vite default port (if you switch)
-  "https://llf.org.in",     // Production
-  "https://school-directory.llf.org.in" // Production subdomain
-];
-
 app.use(cors({
-  origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl)
-    if (!origin) return callback(null, true);
-    
-    if (allowedOrigins.indexOf(origin) !== -1) {
-      callback(null, true);
-    } else {
-      callback(new Error("Not allowed by CORS"));
-    }
-  },
+  origin: "*", 
   credentials: true, // 👈 REQUIRED for cookies
   methods: "*",
   allowedHeaders: "*",
