@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const schoolController = require("../controllers/schoolController");
 const exportController = require("../controllers/exportController");
+const adminController = require("../controllers/adminController");
 const { authenticate, authorizeAdmin } = require("../middleware/authMiddleware");
 
 // --- 1. MIDDLEWARE: Protect all school routes ---
@@ -15,6 +16,10 @@ router.get("/skipped", schoolController.getSkippedList);
 router.get("/skipped/summary", schoolController.getSkippedSummary);
 router.get("/skipped/export", schoolController.exportSkippedList);
 router.get("/export/list", exportController.downloadSchoolList);
+
+router.post("/requests", schoolController.raiseDataRequest);
+router.get("/requests/pending", schoolController.getPendingRequests);
+router.get("/locations/unsynced", schoolController.getUnsyncedLocations);
 
 // --- 3. admin ONLY ROUTES (Syncing & Dashboard Stats) ---
 router.post("/sync-directory", authorizeAdmin, schoolController.syncDirectory); 

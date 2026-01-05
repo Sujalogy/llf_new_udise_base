@@ -800,3 +800,86 @@ exports.getStateMatrix = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
+exports.getUnsyncedLocations = async (req, res) => {
+  try {
+    // This query finds districts that exist in master but NOT in the schools table
+    const result = await pool.query(`
+      SELECT 
+    d.stcode11, 
+    d.stname AS stname, 
+    d.dtcode11, 
+    d.dtname AS dtname
+FROM udise_data.district d
+WHERE d.dtname NOT IN (
+    SELECT DISTINCT district_name 
+    FROM udise_data.school_udise_data 
+    WHERE district_name IS NOT NULL
+)
+ORDER BY d.stname, d.dtname;
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch unsynced locations" });
+  }
+};
+
+exports.raiseDataRequest = async (req, res) => {
+  const { stcode11, stname, dtcode11, dtnames } = req.body;
+  const userId = req.user.userId;
+
+  try {
+    // Check for pending requests that overlap with requested districts
+    const checkQuery = `
+      SELECT r.*, u.name as requester_name 
+      FROM udise_data.data_requests r
+      JOIN udise_data.users u ON r.user_id = u.user_id
+      WHERE r.stcode11 = $1 
+        AND r.dtcode11 && $2::text[] 
+        AND r.status = 'pending'
+      LIMIT 1`;
+
+    const duplicate = await pool.query(checkQuery, [stcode11, dtcode11]);
+
+    if (duplicate.rows.length > 0) {
+      const d = duplicate.rows[0];
+      // This sends the specific name back to the frontend
+      return res.status(409).json({
+        error: "Duplicate Request",
+        message: `${d.requester_name} has already raised a pending request for these districts in ${stname}.`,
+      });
+    }
+
+    await pool.query(
+      `INSERT INTO udise_data.data_requests 
+       (user_id, stcode11, stname, dtcode11, dtnames, status) 
+       VALUES ($1, $2, $3, $4, $5, 'pending')`,
+      [userId, stcode11, stname, dtcode11, dtnames]
+    );
+
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
+exports.getPendingRequests = async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        r.request_id, 
+        u.name as user_name, 
+        r.stname, 
+        r.dtnames, 
+        r.created_at
+      FROM udise_data.data_requests r
+      JOIN udise_data.users u ON r.user_id = u.user_id
+      WHERE r.status = 'pending'
+      ORDER BY r.created_at DESC
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Error fetching pending requests:", err);
+    res.status(500).json({ error: "Failed to fetch pending requests" });
+  }
+};
