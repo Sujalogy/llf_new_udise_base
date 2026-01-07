@@ -705,38 +705,48 @@ exports.removeSkippedSchool = async (udiseCode) => {
   );
 };
 
-exports.getSkippedSummary = async ({ yearId, stcode11 }) => {
+exports.getSkippedSummary = async ({ yearId, stcode11, type, vaultTitle }) => {
   const params = [];
   let paramIdx = 1;
   const conditions = [];
 
-  // Filter by State if provided
+  // 1. Filter by State
   if (stcode11 && stcode11 !== "all") {
     conditions.push(`s.stcode11 = $${paramIdx++}`);
     params.push(stcode11);
   }
 
-  // Filter by Year if provided (Matches year_desc column)
+  // 2. Filter by Year
   if (yearId && yearId !== "all") {
-    // Note: If yearId is numeric (e.g. 11) but DB stores "2023-24", you need to convert it first.
-    // Assuming here we pass the exact string stored in DB or ID matches.
     conditions.push(`s.year_desc = $${paramIdx++}`);
     params.push(yearId);
   }
 
-  const whereClause =
-    conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  // 3. Filter by Type (Main vs External)
+  if (type === 'main') {
+    conditions.push(`s.title_header IS NULL`);
+  } else if (type === 'external') {
+    if (vaultTitle && vaultTitle !== 'all') {
+      conditions.push(`s.title_header = $${paramIdx++}`);
+      params.push(vaultTitle);
+    } else {
+      conditions.push(`s.title_header IS NOT NULL`);
+    }
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
   const query = `
     SELECT 
       l.stname as state,
       l.dtname as district,
       s.year_desc as year,
+      s.title_header as vault, -- Return vault name for the UI
       COUNT(*)::int as count
     FROM udise_data.skipped_udise s
     LEFT JOIN udise_data.school_udise_list l ON s.udise_code = l.schcd
     ${whereClause}
-    GROUP BY l.stname, l.dtname, s.year_desc
+    GROUP BY l.stname, l.dtname, s.year_desc, s.title_header
     ORDER BY l.stname, count DESC
   `;
 
@@ -744,28 +754,39 @@ exports.getSkippedSummary = async ({ yearId, stcode11 }) => {
   return result.rows;
 };
 
-exports.getSkippedForExport = async ({ yearId, stcode11, dtcode11 }) => {
+exports.getSkippedForExport = async ({ yearId, stcode11, dtcode11, type, vaultTitle }) => {
   const params = [];
   let paramIdx = 1;
   const conditions = [];
 
-  if (stcode11 && stcode11 !== "all") {
-    conditions.push(`s.stcode11 = $${paramIdx++}`);
-    params.push(stcode11);
+  // 1. Filter by Source Type (Main vs External)
+  if (type === 'main') {
+    conditions.push(`s.title_header IS NULL`);
+    // Apply state filter ONLY to main directory
+    if (stcode11 && stcode11 !== "all") {
+      conditions.push(`s.stcode11 = $${paramIdx++}`);
+      params.push(stcode11);
+    }
+  } else if (type === 'external') {
+    if (vaultTitle && vaultTitle !== 'all') {
+      conditions.push(`s.title_header = $${paramIdx++}`);
+      params.push(vaultTitle);
+    } else {
+      conditions.push(`s.title_header IS NOT NULL`);
+    }
   }
 
+  // 2. Common filters (District, Year)
   if (dtcode11 && dtcode11 !== "all") {
     conditions.push(`s.dtcode11 = $${paramIdx++}`);
     params.push(dtcode11);
   }
-
   if (yearId && yearId !== "all") {
     conditions.push(`s.year_desc = $${paramIdx++}`);
     params.push(yearId);
   }
 
-  const whereClause =
-    conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
   const query = `
     SELECT 
@@ -775,11 +796,14 @@ exports.getSkippedForExport = async ({ yearId, stcode11, dtcode11 }) => {
       s.created_at,
       l.stname,
       l.dtname,
-      -- Attempt to get school name from directory or skipped log if available
-      COALESCE(d.school_name, 'Unknown') as school_name
+      s.title_header as vault,
+      -- Fetch name from whichever table likely has it
+      COALESCE(d.school_name, e.school_name, 'Unknown') as school_name
     FROM udise_data.skipped_udise s
     LEFT JOIN udise_data.school_udise_list l ON s.udise_code = l.schcd
     LEFT JOIN udise_data.school_udise_data d ON s.udise_code = d.udise_code
+    LEFT JOIN udise_data.external_udise_data e 
+      ON s.udise_code = e.udise_code AND s.title_header = e.title_header
     ${whereClause}
     ORDER BY s.created_at DESC
   `;

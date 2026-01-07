@@ -648,10 +648,10 @@ exports.getDashboardStats = async (req, res) => {
 
 exports.getSkippedSummary = async (req, res) => {
   try {
-    const { yearId, stcode11 } = req.query;
+    const { yearId, stcode11, type, vaultTitle } = req.query;
+    
+    // Logic to convert numeric yearId to yearDesc if necessary
     let finalYear = yearId;
-
-    // Convert numeric ID (11) to DB string (2024-25)
     if (yearId && !isNaN(parseInt(yearId))) {
       const years = await apiService.fetchYears();
       const match = years.find((y) => String(y.yearId) === String(yearId));
@@ -659,8 +659,10 @@ exports.getSkippedSummary = async (req, res) => {
     }
 
     const summary = await schoolModel.getSkippedSummary({
-      yearId: finalYear, // Now matches "2024-25" in database
+      yearId: finalYear,
       stcode11,
+      type,
+      vaultTitle
     });
 
     res.json(summary);
@@ -672,46 +674,35 @@ exports.getSkippedSummary = async (req, res) => {
 
 exports.exportSkippedList = async (req, res) => {
   try {
-    const { format = "json", yearId, stcode11, dtcode11 } = req.query;
+    const { format = "json", yearId, stcode11, dtcode11, type, vaultTitle } = req.query;
 
     const data = await schoolModel.getSkippedForExport({
       yearId,
       stcode11,
       dtcode11,
+      type,
+      vaultTitle
     });
 
     if (format === "csv") {
-      // Basic CSV conversion
-      const headers = [
-        "UDISE Code",
-        "School Name",
-        "State",
-        "District",
-        "Year",
-        "Reason",
-        "Date",
-      ];
+      const headers = ["UDISE Code", "School Name", "State", "District", "Vault", "Year", "Reason", "Date"];
       const csvRows = [headers.join(",")];
 
       data.forEach((row) => {
-        csvRows.push(
-          [
-            row.udise_code,
-            `"${(row.school_name || "").replace(/"/g, '""')}"`, // Escape quotes
-            row.stname,
-            row.dtname,
-            row.year_desc,
-            `"${(row.reason || "").replace(/"/g, '""')}"`,
-            new Date(row.created_at).toLocaleDateString(),
-          ].join(",")
-        );
+        csvRows.push([
+          row.udise_code,
+          `"${(row.school_name || "").replace(/"/g, '""')}"`,
+          row.stname || "",
+          row.dtname || "",
+          row.vault || "Main Directory", // Label source
+          row.year_desc,
+          `"${(row.reason || "").replace(/"/g, '""')}"`,
+          new Date(row.created_at).toLocaleDateString(),
+        ].join(","));
       });
 
       res.setHeader("Content-Type", "text/csv");
-      res.setHeader(
-        "Content-Disposition",
-        "attachment; filename=skipped_schools.csv"
-      );
+      res.setHeader("Content-Disposition", "attachment; filename=skipped_schools.csv");
       return res.send(csvRows.join("\n"));
     }
 
