@@ -485,7 +485,6 @@ const getSocialSum = (jsonList, categoryName) => {
 exports.getLocalSchoolDetails = async (req, res) => {
   try {
     const { schoolId } = req.params;
-    console.log(req.params)
     const school = await schoolModel.getSchoolByUdiseOrId(schoolId);
 
     if (!school) {
@@ -890,9 +889,13 @@ exports.getPendingRequests = async (req, res) => {
 exports.syncExternalDetails = async (req, res) => {
   try {
     const { udiseList, titleHeader, yearId, batchSize = 5 } = req.body;
+    const userId = req.user.userId; // Get from authenticated user
 
     if (!udiseList?.length || !titleHeader) {
-      return res.status(400).json({ success: false, message: "Missing udiseList or titleHeader" });
+      return res.status(400).json({ 
+        success: false, 
+        message: "Missing udiseList or titleHeader" 
+      });
     }
 
     // Resolve Year Description
@@ -903,27 +906,50 @@ exports.syncExternalDetails = async (req, res) => {
     let processed = 0;
     let failed = 0;
 
-    // Batch processing to respect API rate limits
+    // Batch processing
     for (let i = 0; i < udiseList.length; i += batchSize) {
       const chunk = udiseList.slice(i, i + batchSize);
+      
       await Promise.all(chunk.map(async (code) => {
         try {
           const fullData = await apiService.fetchFullSchoolData(code, yearId || 11);
-          if (fullData) {
+          
+          if (fullData && fullData.report?.schoolName) {
             fullData.yearDesc = yearDesc;
-            await schoolModel.upsertExternalSchoolDetails(fullData, titleHeader);
+            // Pass userId to track who uploaded
+            await schoolModel.upsertExternalSchoolDetails(fullData, titleHeader, userId);
             processed++;
           } else {
+            // Log as skipped with user tracking
+            await schoolModel.logExternalSkipped(
+              code, 
+              yearDesc, 
+              titleHeader, 
+              userId, 
+              'Missing school name or data'
+            );
             failed++;
           }
         } catch (err) {
           console.error(`Error syncing external code ${code}:`, err.message);
+          await schoolModel.logExternalSkipped(
+            code, 
+            yearDesc, 
+            titleHeader, 
+            userId, 
+            `Error: ${err.message}`
+          );
           failed++;
         }
       }));
     }
 
-    res.json({ success: true, processed, failed, message: `Completed: ${processed} synced, ${failed} failed.` });
+    res.json({ 
+      success: true, 
+      processed, 
+      failed, 
+      message: `Completed: ${processed} synced, ${failed} failed.` 
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -967,5 +993,128 @@ exports.exportExternalData = async (req, res) => {
   } catch (err) {
     console.error("Export External Error:", err);
     res.status(500).json({ error: "Failed to export external data" });
+  }
+};
+
+// Get user's accessible vaults (owned + shared)
+exports.getUserVaults = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const vaults = await schoolModel.getUserAccessibleVaults(userId);
+    res.json(vaults);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// Share a vault with another user
+exports.shareVault = async (req, res) => {
+  try {
+    const { titleHeader, recipientEmail, accessLevel } = req.body;
+    const ownerUserId = req.user.userId;
+
+    if (!titleHeader || !recipientEmail) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const share = await schoolModel.shareVault(
+      titleHeader, 
+      ownerUserId, 
+      recipientEmail, 
+      accessLevel || 'read'
+    );
+
+    res.json({ 
+      success: true, 
+      message: `Vault shared with ${recipientEmail}`,
+      share 
+    });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+};
+
+// Revoke vault sharing
+exports.revokeVaultShare = async (req, res) => {
+  try {
+    const { titleHeader, recipientEmail } = req.body;
+    const ownerUserId = req.user.userId;
+
+    const result = await schoolModel.revokeVaultShare(titleHeader, ownerUserId, recipientEmail);
+    
+    if (result) {
+      res.json({ success: true, message: 'Access revoked successfully' });
+    } else {
+      res.status(404).json({ error: 'Share not found' });
+    }
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+};
+
+// Get vault sharing details
+exports.getVaultShares = async (req, res) => {
+  try {
+    const { titleHeader } = req.params;
+    const ownerUserId = req.user.userId;
+
+    const shares = await schoolModel.getVaultShares(titleHeader, ownerUserId);
+    res.json(shares);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// Updated: Get external skipped schools (with source filter)
+exports.getExternalSkippedSchools = async (req, res) => {
+  try {
+    const { page = 1, limit = 50, source = 'external', titleHeader } = req.query;
+    const userId = req.user.userId;
+
+    let conditions = [`source = $1`];
+    let params = [source];
+    let paramIdx = 2;
+
+    // Users can only see their own external skipped records
+    if (source === 'external') {
+      conditions.push(`uploaded_by_user_id = $${paramIdx++}`);
+      params.push(userId);
+    }
+
+    if (titleHeader) {
+      conditions.push(`title_header = $${paramIdx++}`);
+      params.push(titleHeader);
+    }
+
+    const whereSql = `WHERE ${conditions.join(' AND ')}`;
+    const offset = (page - 1) * limit;
+
+    const dataQuery = `
+      SELECT * FROM udise_data.skipped_udise
+      ${whereSql}
+      ORDER BY created_at DESC
+      LIMIT $${paramIdx} OFFSET $${paramIdx + 1}
+    `;
+
+    const countQuery = `
+      SELECT COUNT(*) as total FROM udise_data.skipped_udise
+      ${whereSql}
+    `;
+
+    const [data, count] = await Promise.all([
+      pool.query(dataQuery, [...params, limit, offset]),
+      pool.query(countQuery, params)
+    ]);
+
+    res.json({
+      data: data.rows,
+      meta: {
+        page,
+        limit,
+        total: parseInt(count.rows[0].total)
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 };

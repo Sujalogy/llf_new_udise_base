@@ -32,12 +32,31 @@ router.get("/search", schoolController.searchSchool);
 router.get("/profile/:schoolId", schoolController.getProfile);
 
 
-router.post("/sync/external", authorizeAdmin, schoolController.syncExternalDetails);
-// 2. Browse: Get paginated list of schools in the External Vault
-router.get("/external/list", authorizeAdmin, exportController.getExternalUdiseList);
-// 3. Filters: Get unique Batch Titles (title_header) for dropdowns
-router.get("/external/batch-filters", authorizeAdmin, exportController.getExternalBatchFilters);
-// 4. Export: Download flattened CSV/JSON for a specific batch
-router.get("/export/external", authorizeAdmin, exportController.exportExternalDataFlattened);
+// 1. Upload & Sync External Files (Now tracks user_id)
+router.post("/sync/external", schoolController.syncExternalDetails);
+
+// 2. Get User's Accessible Vaults (Owned + Shared)
+router.get("/external/vaults", exportController.getUserVaults);
+
+// 3. Browse External Schools (Filtered by user access)
+router.get("/external/list", exportController.getExternalUdiseList);
+
+// 4. Get Batch Filters (Only user's accessible batches)
+router.get("/external/batch-filters", exportController.getExternalBatchFilters);
+
+// 5. Export External Data (Only if user has access)
+router.get("/export/external", exportController.exportExternalDataFlattened);
+
+// 6. Share Vault with Another User
+router.post("/external/share", schoolController.shareVault);
+
+// 7. Revoke Vault Sharing
+router.delete("/external/share", schoolController.revokeVaultShare);
+
+// 8. Get Vault Sharing Details
+router.get("/external/shares/:titleHeader", schoolController.getVaultShares);
+
+// 9. Get External Skipped Schools (User-specific)
+router.get("/external/skipped", schoolController.getExternalSkippedSchools);
 
 module.exports = router;

@@ -827,7 +827,7 @@ exports.getStateMatrix = async () => {
   return result.rows;
 };
 
-exports.upsertExternalSchoolDetails = async (data, titleHeader) => {
+exports.upsertExternalSchoolDetails = async (data, titleHeader, userId) => {
   const p = data.profile || {};
   const f = data.facility || {};
   const r = data.report || {};
@@ -849,7 +849,7 @@ exports.upsertExternalSchoolDetails = async (data, titleHeader) => {
 
   const query = `
     INSERT INTO udise_data.external_udise_data (
-      title_header, udise_code, school_id, school_name, year_desc,
+      title_header, uploaded_by_user_id, udise_code, school_id, school_name, year_desc,
       state_name, district_name, block_name, village_ward_name, cluster_name,
       school_phone, location_type, head_master_name, school_status, school_type,
       management_type, category, establishment_year, is_pre_primary_section,
@@ -871,19 +871,21 @@ exports.upsertExternalSchoolDetails = async (data, titleHeader) => {
       total_expenditure, total_grant,
       social_data_general_sc_st_obc, social_data_religion, social_data_cwsn, social_data_rte, social_data_ews
     ) VALUES (
-      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22,
-      $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42,
+      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23,
+      $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42,
       $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62,
-      $63, $64, $65, $66, $67, $68, $69, $70, $71, $72, $73, $74, $75, $76, $77,
-      $78, $79, $80, $81, $82
+      $63, $64, $65, $66, $67, $68, $69, $70, $71, $72, $73, $74, $75, $76, $77, $78,
+      $79, $80, $81, $82, $83
     )
     ON CONFLICT (udise_code, year_desc, title_header) DO UPDATE SET
       school_name = EXCLUDED.school_name,
+      uploaded_by_user_id = EXCLUDED.uploaded_by_user_id,
       updated_at = NOW();
   `;
 
   const values = [
     titleHeader,
+    userId, // NEW: Track who uploaded this
     data.udiseCode,
     data.schoolId,
     r.schoolName,
@@ -970,6 +972,58 @@ exports.upsertExternalSchoolDetails = async (data, titleHeader) => {
   await pool.query(query, values);
 };
 
+exports.logExternalSkipped = async (
+  udiseCode,
+  yearDesc,
+  titleHeader,
+  userId,
+  reason
+) => {
+  const query = `
+    INSERT INTO udise_data.skipped_udise 
+    (udise_code, year_desc, source, title_header, uploaded_by_user_id, reason)
+    VALUES ($1, $2, 'external', $3, $4, $5)
+    ON CONFLICT (udise_code, year_desc, source, title_header) 
+    DO UPDATE SET 
+      reason = EXCLUDED.reason, 
+      created_at = NOW()
+  `;
+  await pool.query(query, [udiseCode, yearDesc, titleHeader, userId, reason]);
+};
+
+// Get user's own vaults and shared vaults
+exports.getUserAccessibleVaults = async (userId) => {
+  const query = `
+    SELECT DISTINCT
+      e.title_header,
+      e.uploaded_by_user_id as owner_id,
+      u.name as owner_name,
+      u.email as owner_email,
+      COUNT(DISTINCT e.udise_code) as school_count,
+      MIN(e.uploaded_at) as created_at,
+      MAX(e.updated_at) as last_updated,
+      CASE 
+        WHEN e.uploaded_by_user_id = $1 THEN 'owned'
+        WHEN s.shared_with_user_id IS NOT NULL THEN 'shared'
+        ELSE NULL
+      END as access_type,
+      s.access_level
+    FROM udise_data.external_udise_data e
+    JOIN udise_data.users u ON e.uploaded_by_user_id = u.user_id
+    LEFT JOIN udise_data.external_vault_shares s 
+      ON e.title_header = s.title_header 
+      AND e.uploaded_by_user_id = s.owner_user_id
+      AND s.shared_with_user_id = $1
+    WHERE e.uploaded_by_user_id = $1 
+       OR s.shared_with_user_id = $1
+    GROUP BY e.title_header, e.uploaded_by_user_id, u.name, u.email, s.shared_with_user_id, s.access_level
+    ORDER BY created_at DESC
+  `;
+
+  const result = await pool.query(query, [userId]);
+  return result.rows;
+};
+
 // src/models/schoolModel.js
 
 exports.getExternalDataByBatch = async (titleHeader) => {
@@ -992,46 +1046,62 @@ exports.getExternalDataByBatch = async (titleHeader) => {
   return result.rows;
 };
 
-exports.getExternalSchoolList = async (filters, page, limit) => {
-  const conditions = [];
-  const params = [];
-  let paramIdx = 1;
+exports.getExternalSchoolList = async (filters, page, limit, userId) => {
+  const conditions = [
+    `(e.uploaded_by_user_id = $1 OR s.shared_with_user_id = $1)`,
+  ];
+  const params = [userId];
+  let paramIdx = 2;
 
   if (filters.yearDesc) {
-    conditions.push(`year_desc = $${paramIdx++}`);
+    conditions.push(`e.year_desc = $${paramIdx++}`);
     params.push(filters.yearDesc);
   }
   if (filters.titleHeader && filters.titleHeader !== "all") {
-    conditions.push(`title_header = $${paramIdx++}`);
+    conditions.push(`e.title_header = $${paramIdx++}`);
     params.push(filters.titleHeader);
-  }
-  if (filters.stateName && filters.stateName !== "all") {
-    conditions.push(`state_name = $${paramIdx++}`);
-    params.push(filters.stateName);
   }
   if (filters.search) {
     conditions.push(
-      `(school_name ILIKE $${paramIdx} OR udise_code ILIKE $${paramIdx})`
+      `(e.school_name ILIKE $${paramIdx} OR e.udise_code ILIKE $${paramIdx})`
     );
     params.push(`%${filters.search}%`);
     paramIdx++;
   }
 
-  const whereSql =
-    conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  const whereSql = `WHERE ${conditions.join(" AND ")}`;
   const offset = (page - 1) * limit;
 
   const dataQuery = `
-    SELECT udise_code, school_name, state_name, district_name, block_name, 
-           school_id, school_status, school_type, category, 
-           management_type, year_desc, title_header
-    FROM udise_data.external_udise_data
-    ${whereSql}
-    ORDER BY created_at DESC
-    LIMIT $${paramIdx} OFFSET $${paramIdx + 1}
-  `;
+  SELECT DISTINCT
+    e.udise_code, e.school_name, e.state_name, e.district_name, e.block_name, 
+    e.school_id, e.school_status, e.school_type, e.category, 
+    e.management_type, e.year_desc, e.title_header,
+    e.created_at, -- Add this line
+    e.uploaded_by_user_id as owner_id,
+    u.name as owner_name,
+    CASE 
+      WHEN e.uploaded_by_user_id = $1 THEN 'owned'
+      ELSE 'shared'
+    END as access_type
+  FROM udise_data.external_udise_data e
+  JOIN udise_data.users u ON e.uploaded_by_user_id = u.user_id
+  LEFT JOIN udise_data.external_vault_shares s 
+    ON e.title_header = s.title_header 
+    AND e.uploaded_by_user_id = s.owner_user_id
+  ${whereSql}
+  ORDER BY e.created_at DESC
+  LIMIT $${paramIdx} OFFSET $${paramIdx + 1}
+`;
 
-  const countQuery = `SELECT COUNT(*) as total FROM udise_data.external_udise_data ${whereSql}`;
+  const countQuery = `
+    SELECT COUNT(DISTINCT e.udise_code) as total 
+    FROM udise_data.external_udise_data e
+    LEFT JOIN udise_data.external_vault_shares s 
+      ON e.title_header = s.title_header 
+      AND e.uploaded_by_user_id = s.owner_user_id
+    ${whereSql}
+  `;
 
   const [dataResult, countResult] = await Promise.all([
     pool.query(dataQuery, [...params, limit, offset]),
@@ -1042,6 +1112,100 @@ exports.getExternalSchoolList = async (filters, page, limit) => {
     data: dataResult.rows,
     meta: { page, limit, total: parseInt(countResult.rows[0]?.total || 0) },
   };
+};
+
+// Share vault with another user
+exports.shareVault = async (
+  titleHeader,
+  ownerUserId,
+  recipientEmail,
+  accessLevel = "read"
+) => {
+  // First, find the recipient user
+  const userQuery = `SELECT user_id FROM udise_data.users WHERE email = $1`;
+  const userResult = await pool.query(userQuery, [recipientEmail]);
+
+  if (userResult.rows.length === 0) {
+    throw new Error(`No user found with email: ${recipientEmail}`);
+  }
+
+  const recipientUserId = userResult.rows[0].user_id;
+
+  // Verify ownership
+  const ownerCheck = `
+    SELECT COUNT(*) as count FROM udise_data.external_udise_data 
+    WHERE title_header = $1 AND uploaded_by_user_id = $2
+  `;
+  const ownerResult = await pool.query(ownerCheck, [titleHeader, ownerUserId]);
+
+  if (parseInt(ownerResult.rows[0].count) === 0) {
+    throw new Error("You can only share vaults you own");
+  }
+
+  // Create share
+  const shareQuery = `
+    INSERT INTO udise_data.external_vault_shares 
+    (title_header, owner_user_id, shared_with_user_id, access_level)
+    VALUES ($1, $2, $3, $4)
+    ON CONFLICT (title_header, owner_user_id, shared_with_user_id) 
+    DO UPDATE SET access_level = EXCLUDED.access_level, shared_at = NOW()
+    RETURNING *
+  `;
+
+  const result = await pool.query(shareQuery, [
+    titleHeader,
+    ownerUserId,
+    recipientUserId,
+    accessLevel,
+  ]);
+  return result.rows[0];
+};
+
+// Revoke vault sharing
+exports.revokeVaultShare = async (titleHeader, ownerUserId, recipientEmail) => {
+  const userQuery = `SELECT user_id FROM udise_data.users WHERE email = $1`;
+  const userResult = await pool.query(userQuery, [recipientEmail]);
+
+  if (userResult.rows.length === 0) {
+    throw new Error(`No user found with email: ${recipientEmail}`);
+  }
+
+  const recipientUserId = userResult.rows[0].user_id;
+
+  const deleteQuery = `
+    DELETE FROM udise_data.external_vault_shares 
+    WHERE title_header = $1 
+      AND owner_user_id = $2 
+      AND shared_with_user_id = $3
+    RETURNING *
+  `;
+
+  const result = await pool.query(deleteQuery, [
+    titleHeader,
+    ownerUserId,
+    recipientUserId,
+  ]);
+  return result.rows[0];
+};
+
+exports.getVaultShares = async (titleHeader, ownerUserId) => {
+  const query = `
+    SELECT 
+      s.share_id,
+      s.title_header,
+      s.access_level,
+      s.shared_at,
+      u.user_id,
+      u.name,
+      u.email
+    FROM udise_data.external_vault_shares s
+    JOIN udise_data.users u ON s.shared_with_user_id = u.user_id
+    WHERE s.title_header = $1 AND s.owner_user_id = $2
+    ORDER BY s.shared_at DESC
+  `;
+
+  const result = await pool.query(query, [titleHeader, ownerUserId]);
+  return result.rows;
 };
 
 exports.getDistinctExternalBatchFilters = async () => {

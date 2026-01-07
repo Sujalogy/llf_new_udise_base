@@ -166,7 +166,8 @@ exports.downloadSchoolList = async (req, res) => {
 
 exports.getExternalUdiseList = async (req, res) => {
   try {
-    const { page = 1, limit = 50, titleHeader, yearId, search, stateName } = req.query;
+    const { page = 1, limit = 50, titleHeader, yearId, search } = req.query;
+    const userId = req.user.userId; // Get authenticated user
     
     let yearDesc = null;
     if (yearId) {
@@ -175,11 +176,14 @@ exports.getExternalUdiseList = async (req, res) => {
       if (match) yearDesc = match.yearDesc;
     }
 
+    // Pass userId to filter accessible vaults only
     const result = await schoolModel.getExternalSchoolList(
-      { titleHeader, yearDesc, search, stateName },
+      { titleHeader, yearDesc, search },
       parseInt(page),
-      parseInt(limit)
+      parseInt(limit),
+      userId // NEW: Only show user's accessible data
     );
+    
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -188,22 +192,69 @@ exports.getExternalUdiseList = async (req, res) => {
 
 exports.getExternalBatchFilters = async (req, res) => {
   try {
-    const batches = await schoolModel.getDistinctExternalBatchFilters();
-    res.json(batches);
+    const userId = req.user.userId;
+    
+    // Only show batches user has access to
+    const query = `
+      SELECT DISTINCT e.title_header, u.name as owner_name
+      FROM udise_data.external_udise_data e
+      JOIN udise_data.users u ON e.uploaded_by_user_id = u.user_id
+      LEFT JOIN udise_data.external_vault_shares s 
+        ON e.title_header = s.title_header 
+        AND e.uploaded_by_user_id = s.owner_user_id
+      WHERE e.uploaded_by_user_id = $1 
+         OR s.shared_with_user_id = $1
+      ORDER BY e.title_header
+    `;
+    
+    const result = await pool.query(query, [userId]);
+    res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: "Failed to fetch batches" });
   }
 };
 
+exports.getUserVaults = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const vaults = await schoolModel.getUserAccessibleVaults(userId);
+    res.json(vaults);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+
 exports.exportExternalDataFlattened = async (req, res) => {
   try {
-    const { format = "csv", titleHeader, yearId } = req.query;
+    const { format = "csv", titleHeader } = req.query;
+    const userId = req.user.userId;
     
-    // 1. Fetch raw data
+    if (!titleHeader) {
+      return res.status(400).json({ error: "Batch title (titleHeader) is required" });
+    }
+
+    // Verify user has access to this vault
+    const accessCheck = `
+      SELECT COUNT(*) as count 
+      FROM udise_data.external_udise_data e
+      LEFT JOIN udise_data.external_vault_shares s 
+        ON e.title_header = s.title_header 
+        AND e.uploaded_by_user_id = s.owner_user_id
+      WHERE e.title_header = $1 
+        AND (e.uploaded_by_user_id = $2 OR s.shared_with_user_id = $2)
+    `;
+    
+    const accessResult = await pool.query(accessCheck, [titleHeader, userId]);
+    
+    if (parseInt(accessResult.rows[0].count) === 0) {
+      return res.status(403).json({ error: "You don't have access to this vault" });
+    }
+
+    // Fetch and export data
     const rawData = await schoolModel.getExternalDataByBatch(titleHeader);
     if (!rawData.length) return res.status(404).send("No data found");
 
-    // 2. Flatten using your specific Social Data logic
     const flatData = rawData.map(flattenSocialData);
 
     let finalContent;

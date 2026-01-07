@@ -83,7 +83,6 @@ async function getSchoolIdByUdise(udiseCode) {
 exports.fetchFullSchoolData = async (udiseCode, yearId = 11) => {
   const schoolId = await getSchoolIdByUdise(udiseCode);
   if (!schoolId) {
-    console.warn(`Skipping ${udiseCode}: School ID not found in UDISE+.`);
     return null;
   }
 
