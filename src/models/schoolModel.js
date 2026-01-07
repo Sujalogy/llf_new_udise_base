@@ -135,7 +135,7 @@ exports.upsertSchoolDetails = async (data) => {
     r.villWardName,
     r.clusterName,
     r.schMgmtStateDesc, // 50 (Management)
-    r.schCategoryDesc,       // 51 [FIX: Map 'r.schCatDesc' to the new Category column]
+    r.schCategoryDesc, // 51 [FIX: Map 'r.schCatDesc' to the new Category column]
   ];
 
   await pool.query(query, values);
@@ -176,7 +176,7 @@ exports.getLocalSchoolList = async (filters, page, limit) => {
 
   const [dataResult, countResult] = await Promise.all([
     pool.query(dataQuery, [...params, limit, offset]),
-    pool.query(countQuery, params)
+    pool.query(countQuery, params),
   ]);
 
   return {
@@ -231,9 +231,9 @@ exports.checkSchoolDataExists = async (udiseCode, yearDesc) => {
     WHERE udise_code = $1 AND year_desc = $2
   `;
   const result = await pool.query(query, [String(udiseCode), String(yearDesc)]);
-  
+
   // Return the first row (or undefined if not found)
-  return result.rows[0]; 
+  return result.rows[0];
 };
 
 exports.getDistinctFilters = async () => {
@@ -261,7 +261,8 @@ exports.upsertSchoolDetails = async (data) => {
   const soc = data.social || {};
 
   const num = (val) => (isNaN(parseInt(val, 10)) ? 0 : parseInt(val, 10));
-  const intOrNull = (val) => (isNaN(parseInt(val, 10)) ? null : parseInt(val, 10));
+  const intOrNull = (val) =>
+    isNaN(parseInt(val, 10)) ? null : parseInt(val, 10);
   const decOrNull = (val) => (isNaN(parseFloat(val)) ? null : parseFloat(val));
   const toBool = (val) =>
     val
@@ -551,31 +552,34 @@ const buildWhereClause = (filters) => {
   }
 
   // 4. School Type Filter (Renamed from 'category' to avoid confusion)
-  if (filters.schoolType && filters.schoolType !== 'all') {
+  if (filters.schoolType && filters.schoolType !== "all") {
     conditions.push(`d.school_type = $${paramIdx++}`);
     params.push(filters.schoolType);
   }
 
   // 5. [NEW] Category Filter (The new DB column)
-  if (filters.category && filters.category !== 'all') {
+  if (filters.category && filters.category !== "all") {
     conditions.push(`d.category = $${paramIdx++}`);
     params.push(filters.category);
   }
 
   // 6. Management Filter
-  if (filters.management && filters.management !== 'all') {
+  if (filters.management && filters.management !== "all") {
     conditions.push(`d.management_type = $${paramIdx++}`);
     params.push(filters.management);
   }
 
   // 7. Search Query
   if (filters.search) {
-    conditions.push(`(d.school_name ILIKE $${paramIdx} OR l.schcd ILIKE $${paramIdx})`);
+    conditions.push(
+      `(d.school_name ILIKE $${paramIdx} OR l.schcd ILIKE $${paramIdx})`
+    );
     params.push(`%${filters.search}%`);
     paramIdx++;
   }
 
-  const whereSql = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  const whereSql =
+    conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
   return { whereSql, params, paramIdx };
 };
 
@@ -635,7 +639,7 @@ exports.getDashboardStats = async () => {
     pool.query(enrollmentQuery),
     pool.query(managementQuery),
     pool.query(categoryQuery),
-    pool.query(stateStatsQuery)
+    pool.query(stateStatsQuery),
   ]);
 
   return {
@@ -643,11 +647,17 @@ exports.getDashboardStats = async () => {
     enrollment: enrol.rows[0],
     management: mgmt.rows,
     category: cat.rows,
-    states: states.rows
+    states: states.rows,
   };
 };
 
-exports.logSkippedSchool = async (udiseCode, stcode11, dtcode11, yearDesc, reason) => {
+exports.logSkippedSchool = async (
+  udiseCode,
+  stcode11,
+  dtcode11,
+  yearDesc,
+  reason
+) => {
   const query = `
     INSERT INTO udise_data.skipped_udise 
     (udise_code, stcode11, dtcode11, year_desc, reason)
@@ -662,7 +672,7 @@ exports.logSkippedSchool = async (udiseCode, stcode11, dtcode11, yearDesc, reaso
 
 exports.getSkippedSchools = async (page = 1, limit = 50) => {
   const offset = (page - 1) * limit;
-  
+
   const dataQuery = `
     SELECT s.*, l.stname, l.dtname
     FROM udise_data.skipped_udise s
@@ -670,12 +680,12 @@ exports.getSkippedSchools = async (page = 1, limit = 50) => {
     ORDER BY s.created_at DESC
     LIMIT $1 OFFSET $2
   `;
-  
+
   const countQuery = `SELECT COUNT(*) as total FROM udise_data.skipped_udise`;
 
   const [data, count] = await Promise.all([
     pool.query(dataQuery, [limit, offset]),
-    pool.query(countQuery)
+    pool.query(countQuery),
   ]);
 
   return {
@@ -683,13 +693,16 @@ exports.getSkippedSchools = async (page = 1, limit = 50) => {
     meta: {
       page,
       limit,
-      total: parseInt(count.rows[0].total)
-    }
+      total: parseInt(count.rows[0].total),
+    },
   };
 };
 
 exports.removeSkippedSchool = async (udiseCode) => {
-  await pool.query("DELETE FROM udise_data.skipped_udise WHERE udise_code = $1", [udiseCode]);
+  await pool.query(
+    "DELETE FROM udise_data.skipped_udise WHERE udise_code = $1",
+    [udiseCode]
+  );
 };
 
 exports.getSkippedSummary = async ({ yearId, stcode11 }) => {
@@ -698,20 +711,21 @@ exports.getSkippedSummary = async ({ yearId, stcode11 }) => {
   const conditions = [];
 
   // Filter by State if provided
-  if (stcode11 && stcode11 !== 'all') {
+  if (stcode11 && stcode11 !== "all") {
     conditions.push(`s.stcode11 = $${paramIdx++}`);
     params.push(stcode11);
   }
 
   // Filter by Year if provided (Matches year_desc column)
-  if (yearId && yearId !== 'all') {
+  if (yearId && yearId !== "all") {
     // Note: If yearId is numeric (e.g. 11) but DB stores "2023-24", you need to convert it first.
     // Assuming here we pass the exact string stored in DB or ID matches.
-    conditions.push(`s.year_desc = $${paramIdx++}`); 
+    conditions.push(`s.year_desc = $${paramIdx++}`);
     params.push(yearId);
   }
 
-  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  const whereClause =
+    conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
   const query = `
     SELECT 
@@ -735,22 +749,23 @@ exports.getSkippedForExport = async ({ yearId, stcode11, dtcode11 }) => {
   let paramIdx = 1;
   const conditions = [];
 
-  if (stcode11 && stcode11 !== 'all') {
+  if (stcode11 && stcode11 !== "all") {
     conditions.push(`s.stcode11 = $${paramIdx++}`);
     params.push(stcode11);
   }
 
-  if (dtcode11 && dtcode11 !== 'all') {
+  if (dtcode11 && dtcode11 !== "all") {
     conditions.push(`s.dtcode11 = $${paramIdx++}`);
     params.push(dtcode11);
   }
 
-  if (yearId && yearId !== 'all') {
+  if (yearId && yearId !== "all") {
     conditions.push(`s.year_desc = $${paramIdx++}`);
     params.push(yearId);
   }
 
-  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  const whereClause =
+    conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
   const query = `
     SELECT 
@@ -810,4 +825,255 @@ exports.getStateMatrix = async () => {
 
   const result = await pool.query(query);
   return result.rows;
+};
+
+exports.upsertExternalSchoolDetails = async (data, titleHeader) => {
+  const p = data.profile || {};
+  const f = data.facility || {};
+  const r = data.report || {};
+  const s = data.stats || {};
+  const soc = data.social || {};
+
+  const num = (val) => (isNaN(parseInt(val, 10)) ? 0 : parseInt(val, 10));
+  const intOrNull = (val) =>
+    isNaN(parseInt(val, 10)) ? null : parseInt(val, 10);
+  const decOrNull = (val) => (isNaN(parseFloat(val)) ? null : parseFloat(val));
+  const toBool = (val) =>
+    val
+      ? String(val).toLowerCase().includes("yes") || String(val).startsWith("1")
+      : false;
+
+  const totalTeachers = r.totalTeacher
+    ? num(r.totalTeacher)
+    : num(s.totalTeacherReg) + num(s.totalTeacherCon);
+
+  const query = `
+    INSERT INTO udise_data.external_udise_data (
+      title_header, udise_code, school_id, school_name, year_desc,
+      state_name, district_name, block_name, village_ward_name, cluster_name,
+      school_phone, location_type, head_master_name, school_status, school_type,
+      management_type, category, establishment_year, is_pre_primary_section,
+      residential_school_type, is_cwsn_school, is_shift_school,
+      medium_of_instruction_1, medium_of_instruction_2, medium_of_instruction_3, medium_of_instruction_4,
+      instructional_days, visits_by_brc, visits_by_crc, visits_by_district_officer,
+      is_minority_school, has_anganwadi, anganwadi_boy_students, anganwadi_girl_students, anganwadi_teacher_trained,
+      is_cce_implemented, has_school_management_committee, has_approach_road,
+      building_status, total_classrooms_in_use, good_condition_classrooms,
+      total_toilets_boys, total_toilets_girls, urinals_boys, urinals_girls,
+      has_drinking_water_facility, has_electricity, has_library, has_playground, 
+      has_medical_checkup, has_integrated_lab, has_internet, has_dth_access,
+      boundary_wall_type, has_handrails, has_handwash_meal, has_handwash_common,
+      has_hm_room, has_rain_harvesting, has_ramps, has_solar_panel,
+      students_with_furniture, functional_desktops, total_digital_boards,
+      total_teachers, total_male_teachers, total_female_teachers,
+      total_regular_teachers, total_contract_teachers, total_part_time_teachers,
+      lowest_class, highest_class, total_boy_students, total_girl_students, total_students,
+      total_expenditure, total_grant,
+      social_data_general_sc_st_obc, social_data_religion, social_data_cwsn, social_data_rte, social_data_ews
+    ) VALUES (
+      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22,
+      $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42,
+      $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62,
+      $63, $64, $65, $66, $67, $68, $69, $70, $71, $72, $73, $74, $75, $76, $77,
+      $78, $79, $80, $81, $82
+    )
+    ON CONFLICT (udise_code, year_desc, title_header) DO UPDATE SET
+      school_name = EXCLUDED.school_name,
+      updated_at = NOW();
+  `;
+
+  const values = [
+    titleHeader,
+    data.udiseCode,
+    data.schoolId,
+    r.schoolName,
+    data.yearDesc || r.yearDesc,
+    r.stateName,
+    r.districtName,
+    r.blockName,
+    r.villWardName,
+    r.clusterName,
+    p.schPhone,
+    r.schLocDesc,
+    p.headMasterName,
+    r.schStatusName,
+    r.schTypeDesc,
+    r.schMgmtStateDesc,
+    r.schCategoryDesc,
+    intOrNull(p.estdYear),
+    p.ppSecDesc,
+    p.resiSchDesc,
+    toBool(p.cwsnSchYnDesc),
+    toBool(p.shiftSchYnDesc),
+    p.mediumOfInstrName1,
+    p.mediumOfInstrName2,
+    p.mediumOfInstrName3,
+    p.mediumOfInstrName4,
+    intOrNull(p.instructionalDays),
+    num(p.noVisitBrc),
+    num(p.noVisitCrc),
+    num(p.noVisitDis),
+    toBool(p.minorityYnDesc),
+    toBool(p.anganwadiYnDesc),
+    num(p.anganwadiStuB),
+    num(p.anganwadiStuG),
+    toBool(p.anganwadiTchTrained),
+    toBool(p.cceYnDesc),
+    toBool(p.smcYnDesc),
+    toBool(p.approachRoadYnDesc),
+    f.bldStatus,
+    num(f.clsrmsInst),
+    num(f.clsrmsGd),
+    num(f.toiletb),
+    num(f.toiletg),
+    num(f.urinalsb),
+    num(f.urinalsg),
+    toBool(f.drinkWaterYnDesc),
+    toBool(f.electricityYnDesc),
+    toBool(f.libraryYnDesc),
+    toBool(f.playgroundYnDesc),
+    toBool(f.medchkYnDesc),
+    toBool(f.integratedLabYnDesc),
+    toBool(f.internetYnDesc),
+    toBool(f.accessDthYnDesc),
+    f.bndrywallType,
+    toBool(f.handrailsYnDesc),
+    toBool(f.handwashMealYnDesc),
+    toBool(f.handwashYnDesc),
+    toBool(f.hmRoomYnDesc),
+    toBool(f.rainHarvestYnDesc),
+    toBool(f.rampsYnDesc),
+    toBool(f.solarpanelYnDesc),
+    num(f.stusHvFurnt),
+    num(f.desktopFun),
+    num(f.digiBoardTot),
+    totalTeachers,
+    num(r.totMale),
+    num(r.totFemale),
+    num(r.tchReg),
+    num(r.tchCont),
+    num(r.tchPart),
+    intOrNull(r.lowClass),
+    intOrNull(r.highClass),
+    num(s.totalBoy),
+    num(s.totalGirl),
+    num(s.totalCount),
+    decOrNull(r.totalExpediture),
+    decOrNull(r.totalGrant),
+    JSON.stringify(soc.flag1 || []),
+    JSON.stringify(soc.flag2 || []),
+    JSON.stringify(soc.flag3 || []),
+    JSON.stringify(soc.flag5 || []),
+    JSON.stringify(soc.flag4 || []),
+  ];
+
+  await pool.query(query, values);
+};
+
+// src/models/schoolModel.js
+
+exports.getExternalDataByBatch = async (titleHeader) => {
+  const query = `
+    SELECT * FROM udise_data.external_udise_data 
+    WHERE title_header = $1 
+    ORDER BY state_name, district_name, school_name
+  `;
+  const result = await pool.query(query, [titleHeader]);
+  return result.rows;
+};
+
+exports.getExternalDataByBatch = async (titleHeader) => {
+  const query = `
+    SELECT * FROM udise_data.external_udise_data 
+    WHERE title_header = $1 
+    ORDER BY state_name, district_name, school_name
+  `;
+  const result = await pool.query(query, [titleHeader]);
+  return result.rows;
+};
+
+exports.getExternalSchoolList = async (filters, page, limit) => {
+  const conditions = [];
+  const params = [];
+  let paramIdx = 1;
+
+  if (filters.yearDesc) {
+    conditions.push(`year_desc = $${paramIdx++}`);
+    params.push(filters.yearDesc);
+  }
+  if (filters.titleHeader && filters.titleHeader !== "all") {
+    conditions.push(`title_header = $${paramIdx++}`);
+    params.push(filters.titleHeader);
+  }
+  if (filters.stateName && filters.stateName !== "all") {
+    conditions.push(`state_name = $${paramIdx++}`);
+    params.push(filters.stateName);
+  }
+  if (filters.search) {
+    conditions.push(
+      `(school_name ILIKE $${paramIdx} OR udise_code ILIKE $${paramIdx})`
+    );
+    params.push(`%${filters.search}%`);
+    paramIdx++;
+  }
+
+  const whereSql =
+    conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  const offset = (page - 1) * limit;
+
+  const dataQuery = `
+    SELECT udise_code, school_name, state_name, district_name, block_name, 
+           school_id, school_status, school_type, category, 
+           management_type, year_desc, title_header
+    FROM udise_data.external_udise_data
+    ${whereSql}
+    ORDER BY created_at DESC
+    LIMIT $${paramIdx} OFFSET $${paramIdx + 1}
+  `;
+
+  const countQuery = `SELECT COUNT(*) as total FROM udise_data.external_udise_data ${whereSql}`;
+
+  const [dataResult, countResult] = await Promise.all([
+    pool.query(dataQuery, [...params, limit, offset]),
+    pool.query(countQuery, params),
+  ]);
+
+  return {
+    data: dataResult.rows,
+    meta: { page, limit, total: parseInt(countResult.rows[0]?.total || 0) },
+  };
+};
+
+exports.getDistinctExternalBatchFilters = async () => {
+  const result = await pool.query(
+    "SELECT DISTINCT title_header FROM udise_data.external_udise_data ORDER BY title_header"
+  );
+  return result.rows.map((r) => r.title_header);
+};
+
+exports.getSchoolByUdiseOrId = async (id) => {
+  // Convert ID to string and trim to handle leading zeros correctly
+  const searchId = String(id).trim();
+
+  // 1. Try Primary Table
+  const primaryQuery = `
+    SELECT * FROM udise_data.school_udise_data 
+    WHERE udise_code = $1 OR school_id = $1 
+    LIMIT 1
+  `;
+  const primaryResult = await pool.query(primaryQuery, [searchId]);
+
+  if (primaryResult.rows.length > 0) {
+    return primaryResult.rows[0];
+  }
+
+  // 2. Try External Table
+  const externalQuery = `
+    SELECT * FROM udise_data.external_udise_data 
+    WHERE udise_code = $1 OR school_id = $1 
+    LIMIT 1
+  `;
+  const externalResult = await pool.query(externalQuery, [searchId]);
+
+  return externalResult.rows[0];
 };

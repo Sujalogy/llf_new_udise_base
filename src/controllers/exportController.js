@@ -163,3 +163,62 @@ exports.downloadSchoolList = async (req, res) => {
     res.status(500).json({ error: "Export failed", details: err.message });
   }
 };
+
+exports.getExternalUdiseList = async (req, res) => {
+  try {
+    const { page = 1, limit = 50, titleHeader, yearId, search, stateName } = req.query;
+    
+    let yearDesc = null;
+    if (yearId) {
+      const years = await apiService.fetchYears();
+      const match = years.find(y => String(y.yearId) === String(yearId));
+      if (match) yearDesc = match.yearDesc;
+    }
+
+    const result = await schoolModel.getExternalSchoolList(
+      { titleHeader, yearDesc, search, stateName },
+      parseInt(page),
+      parseInt(limit)
+    );
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+exports.getExternalBatchFilters = async (req, res) => {
+  try {
+    const batches = await schoolModel.getDistinctExternalBatchFilters();
+    res.json(batches);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch batches" });
+  }
+};
+
+exports.exportExternalDataFlattened = async (req, res) => {
+  try {
+    const { format = "csv", titleHeader, yearId } = req.query;
+    
+    // 1. Fetch raw data
+    const rawData = await schoolModel.getExternalDataByBatch(titleHeader);
+    if (!rawData.length) return res.status(404).send("No data found");
+
+    // 2. Flatten using your specific Social Data logic
+    const flatData = rawData.map(flattenSocialData);
+
+    let finalContent;
+    if (format === "csv") {
+      finalContent = jsonToCsv(flatData);
+      res.setHeader("Content-Type", "text/csv");
+    } else {
+      finalContent = JSON.stringify(flatData, null, 2);
+      res.setHeader("Content-Type", "application/json");
+    }
+
+    const filename = `External_${titleHeader}_${new Date().toISOString().split('T')[0]}`;
+    res.setHeader("Content-Disposition", `attachment; filename=${filename}.${format}`);
+    return res.send(finalContent);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};

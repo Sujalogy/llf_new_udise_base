@@ -485,11 +485,12 @@ const getSocialSum = (jsonList, categoryName) => {
 exports.getLocalSchoolDetails = async (req, res) => {
   try {
     const { schoolId } = req.params;
-    const school = await schoolModel.getSchoolById(schoolId);
+    console.log(req.params)
+    const school = await schoolModel.getSchoolByUdiseOrId(schoolId);
 
     if (!school) {
       return res.status(404).json({
-        error: "School not found in local database. Please sync it first.",
+        error: "School not found in local database or external vault.",
       });
     }
 
@@ -502,6 +503,8 @@ exports.getLocalSchoolDetails = async (req, res) => {
 
     // Construct the response object to match Frontend Interfaces
     const response = {
+      isExternal: !!school.title_header,
+      batchTitle: school.title_header || null,
       profile: {
         udise_code: school.udise_code,
         school_name: school.school_name,
@@ -881,5 +884,88 @@ exports.getPendingRequests = async (req, res) => {
   } catch (err) {
     console.error("Error fetching pending requests:", err);
     res.status(500).json({ error: "Failed to fetch pending requests" });
+  }
+};
+
+exports.syncExternalDetails = async (req, res) => {
+  try {
+    const { udiseList, titleHeader, yearId, batchSize = 5 } = req.body;
+
+    if (!udiseList?.length || !titleHeader) {
+      return res.status(400).json({ success: false, message: "Missing udiseList or titleHeader" });
+    }
+
+    // Resolve Year Description
+    const yearsMeta = await apiService.fetchYears();
+    const selectedYearMeta = yearsMeta.find(y => String(y.yearId) === String(yearId || 11));
+    const yearDesc = selectedYearMeta ? selectedYearMeta.yearDesc : `${yearId || 11}`;
+
+    let processed = 0;
+    let failed = 0;
+
+    // Batch processing to respect API rate limits
+    for (let i = 0; i < udiseList.length; i += batchSize) {
+      const chunk = udiseList.slice(i, i + batchSize);
+      await Promise.all(chunk.map(async (code) => {
+        try {
+          const fullData = await apiService.fetchFullSchoolData(code, yearId || 11);
+          if (fullData) {
+            fullData.yearDesc = yearDesc;
+            await schoolModel.upsertExternalSchoolDetails(fullData, titleHeader);
+            processed++;
+          } else {
+            failed++;
+          }
+        } catch (err) {
+          console.error(`Error syncing external code ${code}:`, err.message);
+          failed++;
+        }
+      }));
+    }
+
+    res.json({ success: true, processed, failed, message: `Completed: ${processed} synced, ${failed} failed.` });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+exports.exportExternalData = async (req, res) => {
+  try {
+    const { format = "json", titleHeader } = req.query;
+
+    if (!titleHeader) {
+      return res.status(400).json({ error: "Batch title (titleHeader) is required" });
+    }
+
+    const data = await schoolModel.getExternalDataByBatch(titleHeader);
+
+    if (format === "csv") {
+      if (data.length === 0) return res.send("No data found");
+      
+      const headers = Object.keys(data[0]);
+      const csvRows = [headers.join(",")];
+
+      data.forEach((row) => {
+        const values = headers.map(header => {
+          const val = row[header];
+          // Handle JSON fields or strings containing commas
+          if (val && typeof val === 'object') return `"${JSON.stringify(val).replace(/"/g, '""')}"`;
+          return `"${String(val || "").replace(/"/g, '""')}"`;
+        });
+        csvRows.push(values.join(","));
+      });
+
+      res.setHeader("Content-Type", "text/csv");
+      res.setHeader("Content-Disposition", `attachment; filename=external_${titleHeader}.csv`);
+      return res.send(csvRows.join("\n"));
+    }
+
+    // Default to JSON
+    res.setHeader("Content-Type", "application/json");
+    res.setHeader("Content-Disposition", `attachment; filename=external_${titleHeader}.json`);
+    res.json(data);
+  } catch (err) {
+    console.error("Export External Error:", err);
+    res.status(500).json({ error: "Failed to export external data" });
   }
 };
