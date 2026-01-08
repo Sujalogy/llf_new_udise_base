@@ -1265,3 +1265,78 @@ exports.getSchoolByUdiseOrId = async (id) => {
 
   return externalResult.rows[0];
 };
+
+exports.globalSearch = async (searchTerm, userId) => {
+  const term = searchTerm.trim().toLowerCase();
+  const pattern = `%${term}%`;
+
+  // Learning Logic: Log search query (Works with existing unique constraint)
+  await pool.query(`
+    INSERT INTO udise_data.search_logs (query_text, user_id)
+    VALUES ($1, $2)
+    ON CONFLICT (query_text) DO UPDATE 
+    SET hit_count = udise_data.search_logs.hit_count + 1, last_searched_at = NOW()
+  `, [term, userId || null]).catch(e => console.error("Search Log Error", e));
+
+  // Weighted Intent Ranking with Explicit Column Alignment
+  const sql = `
+    WITH all_pointers AS (
+      SELECT 
+        udise_code, school_id, school_name, year_desc, state_name, district_name, 
+        block_name, village_ward_name, cluster_name, head_master_name, school_status, 
+        school_type, management_type, category, school_phone, location_type, 
+        establishment_year, total_students, total_teachers, total_boy_students, 
+        total_girl_students, has_internet, has_electricity, has_library, 
+        has_playground, building_status, total_classrooms_in_use, 
+        has_drinking_water_facility, social_data_general_sc_st_obc, 
+        social_data_religion, social_data_cwsn, social_data_rte, social_data_ews,
+        'main' as data_source, NULL as title_header
+      FROM udise_data.school_udise_data
+      UNION ALL
+      SELECT 
+        udise_code, school_id, school_name, year_desc, state_name, district_name, 
+        block_name, village_ward_name, cluster_name, head_master_name, school_status, 
+        school_type, management_type, category, school_phone, location_type, 
+        establishment_year, total_students, total_teachers, total_boy_students, 
+        total_girl_students, has_internet, has_electricity, has_library, 
+        has_playground, building_status, total_classrooms_in_use, 
+        has_drinking_water_facility, social_data_general_sc_st_obc, 
+        social_data_religion, social_data_cwsn, social_data_rte, social_data_ews,
+        'external' as data_source, title_header
+      FROM udise_data.external_udise_data
+    ),
+    ranked_results AS (
+      SELECT 
+        *,
+        (CASE 
+          WHEN LOWER(state_name) = $1 THEN 1000
+          WHEN LOWER(district_name) = $1 THEN 800
+          WHEN udise_code = $1 THEN 500
+          WHEN school_name ILIKE $1 THEN 400
+          ELSE 10
+        END) as intent_score
+      FROM all_pointers
+      WHERE school_name ILIKE $2 OR udise_code ILIKE $2 OR state_name ILIKE $2 OR district_name ILIKE $2
+    )
+    SELECT * FROM ranked_results 
+    ORDER BY intent_score DESC, school_name ASC 
+    LIMIT 40;
+  `;
+
+  // Intent discovery for regions
+  const regionalQuery = `
+    SELECT district_name, state_name, COUNT(*)::int as total_schools, SUM(total_students)::int as total_students
+    FROM udise_data.school_udise_data
+    WHERE state_name ILIKE $2 OR district_name ILIKE $2
+    GROUP BY state_name, district_name
+    ORDER BY (CASE WHEN LOWER(state_name) = $1 THEN 100 ELSE 1 END) DESC, total_schools DESC
+    LIMIT 3;
+  `;
+
+  const [schools, regions] = await Promise.all([
+    pool.query(sql, [term, pattern]),
+    pool.query(regionalQuery, [term, pattern])
+  ]);
+
+  return { schools: schools.rows, regions: regions.rows };
+};

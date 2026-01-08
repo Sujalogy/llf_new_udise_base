@@ -227,7 +227,7 @@ exports.getUserVaults = async (req, res) => {
 
 exports.exportExternalDataFlattened = async (req, res) => {
   try {
-    const { format = "csv", titleHeader } = req.query;
+    const { format, titleHeader } = req.query;
     const userId = req.user.userId;
     
     if (!titleHeader) {

@@ -1109,3 +1109,32 @@ exports.getExternalSkippedSchools = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
+exports.globalSearch = async (req, res) => {
+  try {
+    const { q } = req.query;
+    const userId = req.user?.userId;
+
+    // Minimum 2 characters to trigger the search "word by word"
+    if (!q || q.trim().length < 2) {
+      return res.json({ success: true, data: [] });
+    }
+
+    // Execute the internal weighted search (No external AI calls)
+    const results = await schoolModel.globalSearch(q.trim(), userId);
+    
+    // Detect top-level intent to help the UI (e.g., if we found a state)
+    const topResult = results[0];
+    const detectedIntent = topResult && topResult.intent_score >= 1000 ? 'state' : 'general';
+
+    res.json({
+      success: true,
+      intent: detectedIntent,
+      count: results.length,
+      data: results
+    });
+  } catch (err) {
+    console.error("Internal Search Error:", err.message);
+    res.status(500).json({ error: "Internal Search Logic Failed", details: err.message });
+  }
+};

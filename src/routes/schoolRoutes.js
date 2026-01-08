@@ -59,4 +59,6 @@ router.get("/external/shares/:titleHeader", schoolController.getVaultShares);
 // 9. Get External Skipped Schools (User-specific)
 router.get("/external/skipped", schoolController.getExternalSkippedSchools);
 
+router.get("/global-search", schoolController.globalSearch);
+
 module.exports = router;
